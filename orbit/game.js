@@ -690,7 +690,7 @@ let lastT = 0, readySent = false, rafId = 0;
 function loop(ts) {
   rafId = requestAnimationFrame(loop);
   const t = ts / 1000;
-  let dt = Math.min(0.05, t - (lastT || t));
+  let dt = Math.max(0, Math.min(0.05, t - (lastT || t)));
   lastT = t;
   if (G.screen === 'play' && !G.paused) {
     update(dt);

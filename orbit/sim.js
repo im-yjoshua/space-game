@@ -31,6 +31,7 @@ function elStub(id) {
 
 const elements = {};
 const rafQueue = [];
+let simTime = 0;
 const store = {};
 const adCalls = [];
 
@@ -72,8 +73,9 @@ const { G } = T;
 
 function pump(frames) {
   for (let i = 0; i < frames; i++) {
+    simTime += 16.7;
     const cbs = rafQueue.splice(0, rafQueue.length);
-    for (const cb of cbs) cb(i * 16.7);
+    for (const cb of cbs) cb(simTime);
   }
 }
 function assert(c, msg) { if (!c) { console.error('FAIL:', msg); process.exit(1); } }
