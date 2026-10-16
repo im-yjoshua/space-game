@@ -123,6 +123,21 @@ function assert(c, msg) { if (!c) { console.error('FAIL:', msg); process.exit(1)
   pump(5);
   assert(G.runShards > shardsBefore, 'flying through a shard should collect it');
 
+  // power-up orb pickup applies its effect
+  T.startGame(); pump(30);
+  G.shieldT = 0;
+  G.obs.push({ type: 'pow', kind: 'shield', x: G.px, y: G.py + G.ph / 2, r: 4.5 * G.u, taken: false, seed: 1 });
+  pump(5);
+  assert(G.shieldT > 0, 'flying through a shield orb should grant shield');
+
+  // drifting mine moves vertically over time
+  const my = G.ceilY + 30 * G.u;
+  G.obs.push({ type: 'mine', x: G.px + 200, y: my, baseY: my, drift: true, amp: 8 * G.u, r: 4.2 * G.u, counted: false, seed: 0 });
+  const mine = G.obs[G.obs.length - 1];
+  const yBefore = mine.y;
+  pump(60);
+  assert(Math.abs(mine.y - yBefore) > 0.5, 'drifting mine should move vertically');
+
   // death -> game over -> revive via rewarded ad
   G.shieldT = 0;
   T.die();
@@ -156,6 +171,11 @@ function assert(c, msg) { if (!c) { console.error('FAIL:', msg); process.exit(1)
   pump(300);
   T.setHeld(false);
   pump(300);
+
+  // attract mode: world drifts behind the game-over screen without errors
+  T.die();
+  pump(150);
+  assert(G.attract === true, 'attract mode should engage on menu-family screens');
 
   console.log('SIM OK: fly/drop/flip/shards/death/revive/ads/save - no exceptions.');
   console.log('ad calls:', JSON.stringify(adCalls));

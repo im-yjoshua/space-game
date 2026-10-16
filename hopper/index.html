@@ -12,7 +12,13 @@ html,body{height:100%;overflow:hidden;background:#05070f;font-family:system-ui,-
 #ui{position:fixed;inset:0;pointer-events:none;z-index:5}
 .screen{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;pointer-events:auto;background:rgba(4,6,14,.74);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);padding:24px}
 .hidden{display:none!important}
-h1{font-size:52px;letter-spacing:10px;font-weight:800;background:linear-gradient(180deg,#ffe66d,#ff9f1c);-webkit-background-clip:text;background-clip:text;color:transparent;margin-left:10px;text-align:center}
+h1{font-size:52px;letter-spacing:10px;font-weight:800;background:linear-gradient(180deg,#ffe66d,#ff9f1c);-webkit-background-clip:text;background-clip:text;color:transparent;margin-left:10px;text-align:center;animation:floaty 3.2s ease-in-out infinite}
+@keyframes floaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
+.screen:not(.hidden){animation:fadeIn .28s ease}
+@keyframes fadeIn{from{opacity:0}}
+#newBest:not(.hidden){animation:pop .45s cubic-bezier(.2,1.6,.4,1)}
+@keyframes pop{0%{transform:scale(.4);opacity:0}60%{transform:scale(1.18)}100%{transform:scale(1);opacity:1}}
+.btn{transition:transform .08s ease}
 h2{letter-spacing:8px;font-size:30px}
 .sub{opacity:.7;font-size:13px;letter-spacing:3px;text-align:center}
 .btn{pointer-events:auto;min-width:230px;padding:15px 28px;font-size:17px;font-weight:700;letter-spacing:2px;border:0;border-radius:14px;background:linear-gradient(180deg,#ff9f1c,#e06c00);color:#fff;cursor:pointer;font-family:inherit}
@@ -24,6 +30,11 @@ h2{letter-spacing:8px;font-size:30px}
 .stats b{color:#ffe66d}
 #hud{position:absolute;top:calc(12px + env(safe-area-inset-top));left:0;right:0;display:flex;justify-content:center;align-items:center;gap:20px;pointer-events:none;font-weight:800;font-size:20px;text-shadow:0 2px 8px #000;letter-spacing:1px}
 #hCombo{color:#ffe66d;min-width:70px}
+#hPow{color:#7df9ff;font-size:14px;min-width:60px}
+#toast{position:absolute;top:calc(64px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);background:rgba(5,5,18,.82);border:1px solid rgba(125,249,255,.4);color:#fff;font-weight:800;font-size:14px;letter-spacing:2px;padding:10px 18px;border-radius:12px;pointer-events:none;white-space:nowrap;z-index:9}
+.mission{font-size:12px;opacity:.78;letter-spacing:1px;text-align:center;line-height:1.9}
+.mission.done{color:#7df9ff;opacity:1}
+#missions{margin-top:4px}
 #fuelWrap{width:130px;height:12px;border-radius:7px;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.25);overflow:hidden}
 #fuelFill{height:100%;width:100%;border-radius:6px;background:linear-gradient(90deg,#ff9f1c,#ffe66d)}
 #pauseBtn{position:absolute;top:calc(10px + env(safe-area-inset-top));right:12px;pointer-events:auto;width:44px;height:44px;border-radius:12px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font-size:16px;font-weight:800;cursor:pointer}
@@ -47,8 +58,10 @@ h2{letter-spacing:8px;font-size:30px}
   <div id="hud" class="hidden">
     <span id="hScore">0</span><span id="hCombo"></span>
     <div id="fuelWrap" title="Fuel"><div id="fuelFill"></div></div>
+    <span id="hPow"></span>
     <span id="hShards">◆ 0</span>
   </div>
+  <div id="toast" class="hidden"></div>
   <button id="pauseBtn" class="hidden" aria-label="Pause">| |</button>
   <button id="dropBtn" class="hidden" aria-label="Drop">DROP</button>
 
@@ -59,6 +72,7 @@ h2{letter-spacing:8px;font-size:30px}
     <button class="btn" id="playBtn">PLAY</button>
     <button class="btn ghost" id="customBtn">JETPACKS</button>
     <div class="hint">Hold anywhere, Space, or Up to fly. Release to fall.<br/>Down key or DROP slams you down.<br/>Flying burns fuel, running refills it.<br/>Watch for gravity gates.</div>
+    <div id="missions"></div>
   </div>
 
   <div id="over" class="screen hidden">
@@ -85,6 +99,7 @@ h2{letter-spacing:8px;font-size:30px}
     <h2>PAUSED</h2>
     <button class="btn" id="resumeBtn">RESUME</button>
     <button class="btn ghost" id="restartBtn">RESTART</button>
+    <button class="btn ghost small" id="soundBtn">SOUND: ON</button>
     <button class="btn ghost small" id="quitBtn">QUIT TO MENU</button>
   </div>
 </div>

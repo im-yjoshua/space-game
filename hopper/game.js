@@ -59,7 +59,7 @@ if (typeof module !== 'undefined' && module.exports) {
 /* node-only test handle */
 if (typeof module !== 'undefined' && module.exports) {
   module.exports._test = function () {
-    return { G, save, CFG: CFG, startGame, drop, setHeld, die, buildCustom, update, render, PACKS, packSkin, spawnPattern };
+    return { G, save, CFG: CFG, startGame, drop, setHeld, die, buildCustom, update, render, PACKS, packSkin, spawnPattern, applyPow, checkMission, missionProgress, MISSIONS, POWERS, Sfx };
   };
 }
 
@@ -101,7 +101,7 @@ const PACKS = [
 
 /* ---------------- save data ---------------- */
 const SAVE_KEY = 'hopper_save_v1';
-let save = { best: 0, shards: 0, pack: 'spark', uP: ['spark'], games: 0 };
+let save = { best: 0, shards: 0, pack: 'spark', uP: ['spark'], games: 0, mProg: { score2500: 0, shards40: 0, gates4: 0 }, mDone: [] };
 
 /* ---------------- Playgama Bridge adapter (defensive: game runs without it) ---------------- */
 let BR = null;
@@ -141,6 +141,8 @@ async function loadSave() {
     if (typeof s.pack === 'string') save.pack = s.pack;
     if (Array.isArray(s.uP)) save.uP = s.uP;
     if (typeof s.games === 'number') save.games = s.games;
+    if (s.mProg && typeof s.mProg === 'object') save.mProg = Object.assign({ score2500: 0, shards40: 0, gates4: 0 }, s.mProg);
+    if (Array.isArray(s.mDone)) save.mDone = s.mDone;
   }
 }
 
@@ -183,6 +185,7 @@ function watchHostLifecycle(onPause) {
   try {
     if (BR && BR.EVENT_NAME && BR.platform && typeof BR.platform.on === 'function') {
       BR.platform.on(BR.EVENT_NAME.PAUSE_STATE_CHANGED, function (paused) { if (paused) onPause(); });
+      BR.platform.on(BR.EVENT_NAME.AUDIO_STATE_CHANGED, function (enabled) { Sfx.setMuted(!enabled); refreshSoundBtn(); });
     }
   } catch (e) { /* ignore */ }
   if (typeof document !== 'undefined') {
@@ -191,6 +194,159 @@ function watchHostLifecycle(onPause) {
     });
   }
 }
+
+/* ---------------- audio: synthesized SFX + music, zero assets ---------------- */
+const Sfx = {
+  ctx: null, master: null, musicBus: null, noiseBuf: null,
+  muted: false, thrust: null, musicTimer: null, mStep: 0,
+  init() {
+    if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); return; }
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = this.muted ? 0 : 0.5;
+      this.master.connect(this.ctx.destination);
+      this.musicBus = this.ctx.createGain();
+      this.musicBus.gain.value = 0.13;
+      this.musicBus.connect(this.master);
+      const len = this.ctx.sampleRate;
+      this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const d = this.noiseBuf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    } catch (e) { this.ctx = null; }
+  },
+  setMuted(m) {
+    this.muted = !!m;
+    if (this.master) this.master.gain.setTargetAtTime(this.muted ? 0 : 0.5, this.ctx.currentTime, 0.02);
+  },
+  get ok() { return !!(this.ctx && !this.muted); },
+  tone(o) {
+    if (!this.ok) return;
+    try {
+      const t0 = this.ctx.currentTime + (o.delay || 0);
+      const osc = this.ctx.createOscillator(), gn = this.ctx.createGain();
+      osc.type = o.type || 'sine';
+      osc.frequency.setValueAtTime(o.f, t0);
+      if (o.f2) osc.frequency.exponentialRampToValueAtTime(Math.max(1, o.f2), t0 + o.dur);
+      gn.gain.setValueAtTime(0.0001, t0);
+      gn.gain.linearRampToValueAtTime(o.vol || 0.3, t0 + 0.012);
+      gn.gain.exponentialRampToValueAtTime(0.0001, t0 + o.dur);
+      osc.connect(gn); gn.connect(o.bus || this.master);
+      osc.start(t0); osc.stop(t0 + o.dur + 0.05);
+    } catch (e) { /* audio is best-effort */ }
+  },
+  noise(o) {
+    if (!this.ok || !this.noiseBuf) return;
+    try {
+      const t0 = this.ctx.currentTime + (o.delay || 0);
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noiseBuf; src.loop = true;
+      const flt = this.ctx.createBiquadFilter();
+      flt.type = o.type || 'lowpass';
+      flt.frequency.setValueAtTime(o.freq || 800, t0);
+      flt.Q.value = o.q || 0.8;
+      if (o.slideTo) flt.frequency.exponentialRampToValueAtTime(o.slideTo, t0 + o.dur);
+      const gn = this.ctx.createGain();
+      gn.gain.setValueAtTime(0.0001, t0);
+      gn.gain.linearRampToValueAtTime(o.vol || 0.3, t0 + 0.015);
+      gn.gain.exponentialRampToValueAtTime(0.0001, t0 + o.dur);
+      src.connect(flt); flt.connect(gn); gn.connect(this.master);
+      src.start(t0); src.stop(t0 + o.dur + 0.05);
+    } catch (e) { /* audio is best-effort */ }
+  },
+  click()   { this.tone({ f: 660, f2: 440, dur: 0.07, type: 'square', vol: 0.1 }); },
+  pickup()  { this.tone({ f: 880, dur: 0.09, vol: 0.2 }); this.tone({ f: 1320, dur: 0.12, vol: 0.18, delay: 0.06 }); },
+  nearMiss(){ this.tone({ f: 1760, dur: 0.08, vol: 0.12 }); },
+  dropSfx() { this.noise({ dur: 0.25, vol: 0.22, freq: 3000, slideTo: 300, type: 'highpass' }); },
+  thud()    { this.noise({ dur: 0.12, vol: 0.13, freq: 350 }); },
+  explosion(){ this.noise({ dur: 0.5, vol: 0.45, freq: 900, slideTo: 80 }); this.tone({ f: 160, f2: 40, dur: 0.5, type: 'sawtooth', vol: 0.28 }); },
+  gate()    { this.tone({ f: 220, f2: 880, dur: 0.35, type: 'sawtooth', vol: 0.18 }); this.tone({ f: 440, f2: 1760, dur: 0.35, vol: 0.1, delay: 0.05 }); },
+  over()    { [392, 330, 262, 196].forEach((f, i) => this.tone({ f, dur: 0.22, type: 'triangle', vol: 0.22, delay: 0.15 + i * 0.16 })); },
+  revive()  { [262, 392, 523, 784].forEach((f, i) => this.tone({ f, dur: 0.15, vol: 0.18, delay: i * 0.08 })); },
+  power()   { this.tone({ f: 523, f2: 1046, dur: 0.25, vol: 0.2 }); },
+  thrustStart() {
+    if (!this.ok || this.thrust) return;
+    try {
+      const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf; src.loop = true;
+      const flt = this.ctx.createBiquadFilter(); flt.type = 'bandpass'; flt.frequency.value = 420; flt.Q.value = 0.6;
+      const gn = this.ctx.createGain(); gn.gain.value = 0.0001;
+      gn.gain.setTargetAtTime(0.15, this.ctx.currentTime, 0.06);
+      src.connect(flt); flt.connect(gn); gn.connect(this.master); src.start();
+      this.thrust = { src, gn };
+    } catch (e) { /* ignore */ }
+  },
+  thrustStop() {
+    if (!this.thrust || !this.ctx) { this.thrust = null; return; }
+    const th = this.thrust; this.thrust = null;
+    try {
+      th.gn.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.05);
+      setTimeout(() => { try { th.src.stop(); } catch (e) {} }, 220);
+    } catch (e) { /* ignore */ }
+  },
+  musicStart() {
+    if (!this.ctx || this.musicTimer) return;
+    const bass = [110, 0, 110, 0, 130.8, 0, 98, 0, 110, 0, 110, 0, 146.8, 0, 130.8, 98];
+    const arp = [220, 261.6, 329.6, 261.6, 220, 329.6, 392, 329.6, 220, 261.6, 329.6, 440, 392, 329.6, 261.6, 220];
+    this.musicTimer = setInterval(() => {
+      if (!this.ok) return;
+      const i = this.mStep % 16; this.mStep++;
+      if (bass[i]) this.tone({ f: bass[i], dur: 0.22, type: 'triangle', vol: 0.5, bus: this.musicBus });
+      if (i % 2 === 0) this.tone({ f: arp[i], dur: 0.18, vol: 0.2, bus: this.musicBus });
+      if (i % 4 === 2) this.noise({ dur: 0.03, vol: 0.04, freq: 6000, type: 'highpass' });
+    }, 230);
+  },
+};
+
+/* ---------------- missions ---------------- */
+const MISSIONS = [
+  { id: 'score2500', name: 'Score 2,500 in one run', target: 2500, reward: 60 },
+  { id: 'shards40', name: 'Collect 40 shards', target: 40, reward: 50 },
+  { id: 'gates4', name: 'Pass 4 gravity gates', target: 4, reward: 70 },
+];
+function missionProgress(id) {
+  return Math.floor((save.mProg && save.mProg[id]) || 0);
+}
+function checkMission(id) {
+  const m = MISSIONS.find(x => x.id === id);
+  if (!m || (save.mDone || []).includes(id)) return false;
+  if (missionProgress(id) >= m.target) {
+    save.mDone.push(id);
+    save.shards += m.reward;
+    persist();
+    Sfx.power();
+    showToast('MISSION COMPLETE  +' + m.reward + ' SHARDS');
+    return true;
+  }
+  return false;
+}
+let toastTimer = null;
+function showToast(text) {
+  if (typeof document === 'undefined') return;
+  const el = $('toast');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('hidden');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), 2400);
+}
+
+/* ---------------- power-ups ---------------- */
+const POWERS = [
+  { kind: 'shield', label: 'SHD', color: '#7df9ff', name: 'SHIELD' },
+  { kind: 'magnet', label: 'MAG', color: '#f9a8d4', name: 'MAGNET' },
+  { kind: 'x2', label: '2X', color: '#ffe66d', name: 'DOUBLE SCORE' },
+];
+function applyPow(kind) {
+  if (kind === 'shield') G.shieldT = 12;
+  else if (kind === 'magnet') G.magnetT = 10;
+  else if (kind === 'x2') G.x2T = 12;
+  Sfx.power();
+  const p = POWERS.find(x => x.kind === kind);
+  showToast((p ? p.name : 'POWER') + ' UP!');
+}
+function scoreMult() { return comboMult(G.combo) * (G.x2T > 0 ? 2 : 1); }
 
 /* ---------------- game state ---------------- */
 const G = {
@@ -203,9 +359,11 @@ const G = {
   elapsed: 0, speed: 0, score: 0, combo: 0, comboT: 0, runShards: 0,
   obs: [], parts: [],
   spawnT: 0, lastGate: -99, shieldT: 0, usedRevive: false,
+  hitStop: 0, shake: 0, squashT: 0, prevGround: true,
+  magnetT: 0, x2T: 0,
   // layout
   W: 0, H: 0, u: 8, groundY: 0, ceilY: 0,
-  stars: [], hillOff: 0,
+  stars: [], hillOff: 0, bgFarOff: 0, attract: false,
   prevScreen: 'menu',
 };
 
@@ -227,6 +385,8 @@ function resetRun() {
   G.combo = 0; G.comboT = 0; G.runShards = 0;
   G.obs = []; G.parts = [];
   G.spawnT = 1.2; G.lastGate = -99; G.shieldT = 0; G.usedRevive = false;
+  G.hitStop = 0; G.shake = 0; G.squashT = 0; G.prevGround = true;
+  G.magnetT = 0; G.x2T = 0;
   G.paused = false;
 }
 
@@ -256,12 +416,13 @@ function spawnPattern() {
       G.obs.push({ type: 'spike', side: 'ceil', x: X + i * 16 * u, w, h, counted: false });
     }
   } else if (roll < 0.78) {
-    // mines at staggered heights
+    // mines at staggered heights, some drifting
     const n = 2 + Math.floor(Math.random() * 2);
     let y = G.ceilY + (12 + Math.random() * 20) * u;
     for (let i = 0; i < n; i++) {
       y = clamp(y + (Math.random() - 0.5) * 30 * u, G.ceilY + 10 * u, G.groundY - 10 * u);
-      G.obs.push({ type: 'mine', x: X + i * 24 * u, y, r: 4.2 * u, counted: false, seed: Math.random() * 10 });
+      const drift = t > 25 && Math.random() < 0.45;
+      G.obs.push({ type: 'mine', x: X + i * 24 * u, y, baseY: y, drift, amp: (5 + Math.random() * 6) * u, r: 4.2 * u, counted: false, seed: Math.random() * 10 });
     }
   } else {
     // shard arc (breather)
@@ -269,6 +430,11 @@ function spawnPattern() {
     for (let i = 0; i < 6; i++) {
       G.obs.push({ type: 'shard', x: X + i * 8 * u, y: midY + Math.sin((i / 5) * Math.PI) * -12 * u, r: 3.2 * u, taken: false, seed: Math.random() * 10 });
     }
+  }
+  // occasional power-up orb in a safe spot
+  if (t > 20 && Math.random() < 0.14) {
+    const kind = POWERS[Math.floor(Math.random() * POWERS.length)].kind;
+    G.obs.push({ type: 'pow', kind, x: X + 30 * u, y: (G.ceilY + G.groundY) / 2, r: 4.5 * u, taken: false, seed: Math.random() * 10 });
   }
 }
 
@@ -284,12 +450,15 @@ function update(dt) {
   const u = G.u;
   G.elapsed += dt;
   G.speed = Math.min(CFG.speedMax * u, (CFG.speed0 + G.elapsed * CFG.speedGain) * u);
-  const mult = comboMult(G.combo);
+  const mult = scoreMult();
   G.score += G.speed * dt * 0.06 * mult;
 
   if (G.comboT > 0) { G.comboT -= dt; if (G.comboT <= 0) G.combo = 0; }
   if (G.shieldT > 0) G.shieldT -= dt;
+  if (G.magnetT > 0) G.magnetT -= dt;
+  if (G.x2T > 0) G.x2T -= dt;
   if (G.dropT > 0) G.dropT -= dt;
+  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 46);
 
   // thrust
   G.thrusting = false;
@@ -305,6 +474,7 @@ function update(dt) {
 
   // surfaces
   const s = G.s;
+  const vyBeforeSurf = G.vy;
   G.onGround = false;
   if (s === 1) {
     if (G.py + G.ph >= G.groundY) { G.py = G.groundY - G.ph; if (G.vy > 0) G.vy = 0; G.onGround = true; }
@@ -313,6 +483,20 @@ function update(dt) {
     if (G.py <= G.ceilY) { G.py = G.ceilY; if (G.vy < 0) G.vy = 0; G.onGround = true; }
     if (G.py + G.ph > G.groundY) { G.py = G.groundY - G.ph; if (G.vy > 0) G.vy = 0; }
   }
+  if (G.onGround && !G.prevGround) {
+    const impact = Math.abs(vyBeforeSurf);
+    if (impact > 16 * u) {
+      G.squashT = 0.16;
+      const fx = G.px + G.pw / 2;
+      const fy = G.s === 1 ? G.groundY : G.ceilY;
+      for (let i = 0; i < 10; i++) {
+        G.parts.push({ x: fx + (Math.random() - 0.5) * G.pw, y: fy, vx: (Math.random() - 0.5) * 170, vy: -Math.random() * 130 * G.s, life: 0.45, t: 0, color: '#b8b2a7', r: 2 + Math.random() * 2.5 });
+      }
+      Sfx.thud();
+    }
+  }
+  G.prevGround = G.onGround;
+  if (G.squashT > 0) G.squashT -= dt;
   if (G.onGround && !G.thrusting) G.fuel = refillFuel(G.fuel, dt);
 
   // spawn
@@ -335,6 +519,9 @@ function update(dt) {
     const ob = G.obs[i];
     const prevX = ob.x;
     ob.x -= G.speed * dt;
+    if (ob.type === 'mine' && ob.drift) {
+      ob.y = clamp(ob.baseY + Math.sin(G.elapsed * 2.2 + ob.seed) * ob.amp, G.ceilY + 6 * u, G.groundY - 6 * u);
+    }
 
     if (ob.type === 'gate') {
       if (!ob.passed && prevX >= G.px && ob.x < G.px) {
@@ -342,6 +529,10 @@ function update(dt) {
         G.s = flipSign(G.s);
         G.vy = CFG.fling * G.u * G.s; // fling toward the new surface
         G.onGround = false;
+        save.mProg.gates4++;
+        checkMission('gates4');
+        Sfx.gate();
+        G.shake = Math.max(G.shake, 7);
         burst(G.px + G.pw / 2, (G.ceilY + G.groundY) / 2, '#c4b5fd', 24, 220);
       }
       if (ob.x < -60) G.obs.splice(i, 1);
@@ -349,12 +540,34 @@ function update(dt) {
     }
     if (ob.type === 'shard') {
       if (!ob.taken) {
+        if (G.magnetT > 0) {
+          const mdx = pcx - ob.x, mdy = pcy - ob.y;
+          const md = Math.hypot(mdx, mdy) || 1;
+          if (md < 34 * u) { const pull = 48 * u * dt / md; ob.x += mdx * pull; ob.y += mdy * pull; }
+        }
         const dx = ob.x - pcx, dy = ob.y - pcy;
         if (dx * dx + dy * dy < Math.pow(ob.r + G.pw * 0.5, 2)) {
           ob.taken = true;
           G.runShards++;
-          G.score += 25;
+          save.mProg.shards40++;
+          checkMission('shards40');
+          G.score += 25 * (G.x2T > 0 ? 2 : 1);
+          Sfx.pickup();
           burst(ob.x, ob.y, '#7df9ff', 8, 120);
+          G.obs.splice(i, 1);
+          continue;
+        }
+      }
+      if (ob.x < -60) G.obs.splice(i, 1);
+      continue;
+    }
+    if (ob.type === 'pow') {
+      if (!ob.taken) {
+        const dx = ob.x - pcx, dy = ob.y - pcy;
+        if (dx * dx + dy * dy < Math.pow(ob.r + G.pw * 0.6, 2)) {
+          ob.taken = true;
+          applyPow(ob.kind);
+          burst(ob.x, ob.y, '#ffffff', 12, 170);
           G.obs.splice(i, 1);
           continue;
         }
@@ -384,7 +597,9 @@ function update(dt) {
       if (gap < CFG.nearGap * G.ph && gap > -G.ph * 0.2) {
         G.combo++;
         G.comboT = CFG.comboWindow;
-        G.score += 15 * comboMult(G.combo);
+        G.score += 15 * scoreMult();
+        Sfx.nearMiss();
+        G.shake = Math.max(G.shake, 4);
         burst(pcx, pcy, '#ffe66d', 6, 100);
       }
     }
@@ -402,15 +617,22 @@ function update(dt) {
 
   // parallax
   G.hillOff = (G.hillOff + G.speed * dt * 0.3) % (80 * u);
+  G.bgFarOff += G.speed * dt * 0.06;
 }
 
 function die() {
   const pb = playerBox();
   burst(pb.x + pb.w / 2, pb.y + pb.h / 2, '#ff6b6b', 26, 260);
   burst(pb.x + pb.w / 2, pb.y + pb.h / 2, '#ffe66d', 14, 180);
+  Sfx.explosion();
+  Sfx.over();
+  G.hitStop = 0.09; // brief freeze on death (juice)
+  G.shake = 16;
   const finalScore = Math.floor(G.score);
   const isBest = finalScore > save.best;
   if (isBest) save.best = finalScore;
+  save.mProg.score2500 = Math.max(save.mProg.score2500, finalScore);
+  checkMission('score2500');
   save.shards += G.runShards;
   save.games++;
   persist();
@@ -423,6 +645,7 @@ function drop() {
   G.vy = CFG.dropSpeed * G.u * G.s;
   G.dropT = CFG.dropLock;
   G.held = false;
+  Sfx.dropSfx();
 }
 function setHeld(v) {
   if (G.screen !== 'play' || G.paused) return;
@@ -460,41 +683,95 @@ function resize() {
 function drawPlayer(t) {
   const u = G.u, x = G.px, y = G.py, w = G.pw, h = G.ph;
   const skin = packSkin();
+  const sq = G.squashT > 0 ? G.squashT / 0.16 : 0; // landing squash 1..0
   g.save();
   g.translate(x + w / 2, y + h / 2);
   if (G.s === -1) g.rotate(Math.PI);
+  g.scale(1 + 0.26 * sq, 1 - 0.26 * sq);
+  g.rotate(clamp(G.vy * 0.00035, -0.22, 0.22) * G.s); // lean into motion
   const hw = w / 2, hh = h / 2;
 
-  // jetpack (behind body, on the left)
+  // scarf fluttering behind
+  g.fillStyle = skin.c1;
+  for (let i = 0; i < 3; i++) {
+    const wob = Math.sin(t * 11 - i * 0.9);
+    g.save();
+    g.translate(-hw * 1.05 - i * w * 0.24, -hh * 0.5 + wob * h * 0.05 - i * h * 0.015);
+    g.rotate(wob * 0.4);
+    g.fillRect(-w * 0.24, -h * 0.035, w * 0.26, h * 0.07);
+    g.restore();
+  }
+
+  // jetpack on the back
   g.save();
   g.translate(-hw * 0.85, -hh * 0.1);
   packBase(g, w * 0.55, h * 0.72, skin.c1, skin.c2);
   if (G.thrusting) flame(g, w * 0.55, h * 0.72, t);
   g.restore();
 
-  // legs: run cycle on ground, tucked when flying
-  g.fillStyle = '#cbd5e1';
-  if (G.onGround) {
-    const sw = Math.sin(t * 18) * w * 0.16;
-    g.fillRect(-w * 0.28 + sw, hh * 0.42, w * 0.24, hh * 0.58);
-    g.fillRect(w * 0.04 - sw, hh * 0.42, w * 0.24, hh * 0.58);
-  } else {
-    g.fillRect(-w * 0.3, hh * 0.35, w * 0.26, hh * 0.5);
-    g.fillRect(w * 0.02, hh * 0.15, w * 0.3, hh * 0.42);
+  // legs: run cycle on ground, tucked in flight
+  function leg(hx, swing) {
+    const kx = hx + swing * w * 0.3, ky = hh * 0.6;
+    const fx = hx + swing * w * 0.42, fy = hh * 0.96;
+    g.strokeStyle = '#cbd5e1'; g.lineWidth = w * 0.2; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(hx, hh * 0.32); g.lineTo(kx, ky); g.lineTo(fx, fy); g.stroke();
+    g.fillStyle = '#475569';
+    g.fillRect(fx - w * 0.15, fy - h * 0.035, w * 0.3, h * 0.07);
   }
-  // body
-  g.fillStyle = '#e2e8f0';
+  if (G.onGround) {
+    const bob = Math.abs(Math.sin(t * 16)) * h * 0.03;
+    g.translate(0, -bob);
+    leg(-w * 0.14, Math.sin(t * 16));
+    leg(w * 0.14, Math.sin(t * 16 + Math.PI));
+  } else {
+    leg(-w * 0.16, -0.5);
+    leg(w * 0.1, 0.35);
+  }
+
+  // torso suit with shading
+  g.fillStyle = '#e8eef5';
   g.beginPath();
-  if (g.roundRect) g.roundRect(-w * 0.32, -hh * 0.55, w * 0.64, h * 0.62, w * 0.2);
-  else g.rect(-w * 0.32, -hh * 0.55, w * 0.64, h * 0.62);
+  if (g.roundRect) g.roundRect(-w * 0.34, -hh * 0.62, w * 0.68, h * 0.66, w * 0.22);
+  else g.rect(-w * 0.34, -hh * 0.62, w * 0.68, h * 0.66);
   g.fill();
-  g.fillStyle = skin.c1;
-  g.fillRect(-w * 0.32, -hh * 0.05, w * 0.64, h * 0.1);
+  g.fillStyle = 'rgba(148,163,184,.45)';
+  g.fillRect(w * 0.1, -hh * 0.62, w * 0.24, h * 0.66);
+  // backpack straps
+  g.strokeStyle = '#475569'; g.lineWidth = Math.max(1.5, w * 0.06);
+  g.beginPath(); g.moveTo(-w * 0.3, -hh * 0.6); g.lineTo(-w * 0.12, hh * 0.04); g.stroke();
+  g.beginPath(); g.moveTo(w * 0.3, -hh * 0.6); g.lineTo(w * 0.12, hh * 0.04); g.stroke();
+  // chest light
+  g.fillStyle = skin.c2;
+  g.beginPath(); g.arc(-w * 0.1, -hh * 0.25, w * 0.07, 0, TAU); g.fill();
+  g.fillStyle = 'rgba(255,255,255,.9)';
+  g.beginPath(); g.arc(-w * 0.1, -hh * 0.25, w * 0.028, 0, TAU); g.fill();
+
+  // arm: swings while running, swept back while flying
+  g.strokeStyle = '#dbe4ee'; g.lineWidth = w * 0.16; g.lineCap = 'round';
+  const armSw = G.onGround ? Math.sin(t * 16 + Math.PI) * 0.5 : -0.9;
+  g.beginPath();
+  g.moveTo(w * 0.28, -hh * 0.4);
+  g.lineTo(w * 0.28 + armSw * w * 0.3, hh * 0.1);
+  g.stroke();
+
   // helmet
-  g.fillStyle = '#f1f5f9';
-  g.beginPath(); g.arc(w * 0.08, -hh * 0.72, w * 0.34, 0, TAU); g.fill();
-  g.fillStyle = '#7dd3fc';
-  g.beginPath(); g.arc(w * 0.2, -hh * 0.72, w * 0.2, -1.1, 1.1); g.fill();
+  g.fillStyle = '#eef2f7';
+  g.beginPath(); g.arc(w * 0.06, -hh * 0.78, w * 0.36, 0, TAU); g.fill();
+  g.fillStyle = 'rgba(148,163,184,.5)';
+  g.beginPath(); g.arc(w * 0.06, -hh * 0.78, w * 0.36, 0.6, 2.2); g.fill();
+  g.fillStyle = '#eef2f7';
+  g.beginPath(); g.arc(w * 0.06, -hh * 0.78, w * 0.3, 0, TAU); g.fill();
+  // visor
+  g.fillStyle = '#0ea5e9';
+  g.beginPath(); g.arc(w * 0.16, -hh * 0.78, w * 0.21, -1.05, 1.05); g.fill();
+  g.fillStyle = 'rgba(255,255,255,.75)';
+  g.beginPath(); g.arc(w * 0.22, -hh * 0.92, w * 0.06, -1.05, 1.05); g.fill();
+  // antenna with blinking tip
+  g.strokeStyle = '#94a3b8'; g.lineWidth = Math.max(1.5, w * 0.05);
+  g.beginPath(); g.moveTo(-w * 0.2, -hh * 1.05); g.lineTo(-w * 0.32, -hh * 1.35); g.stroke();
+  g.fillStyle = (Math.floor(t * 2) % 2 === 0) ? '#f43f5e' : '#7f1d1d';
+  g.beginPath(); g.arc(-w * 0.32, -hh * 1.35, w * 0.05, 0, TAU); g.fill();
+
   g.restore();
 
   // shield ring
@@ -553,53 +830,92 @@ function drawObstacle(ob, t) {
     g.fillStyle = 'rgba(255,255,255,.85)';
     g.fillRect(-r / 4, -r / 4, r / 2, r / 2);
     g.restore();
+  } else if (ob.type === 'pow' && !ob.taken) {
+    const p = POWERS.find(x => x.kind === ob.kind) || POWERS[0];
+    const pulse = 1 + 0.15 * Math.sin(t * 5 + ob.seed);
+    const bob = Math.sin(t * 3 + ob.seed) * 3;
+    g.save();
+    g.translate(ob.x, ob.y + bob);
+    g.shadowColor = p.color; g.shadowBlur = 16;
+    g.fillStyle = 'rgba(8,8,20,.88)';
+    g.beginPath(); g.arc(0, 0, ob.r * pulse, 0, TAU); g.fill();
+    g.shadowBlur = 0;
+    g.strokeStyle = p.color; g.lineWidth = 2.5;
+    g.beginPath(); g.arc(0, 0, ob.r * pulse, 0, TAU); g.stroke();
+    g.fillStyle = p.color;
+    g.font = 'bold ' + Math.max(10, Math.round(ob.r * 1.05)) + 'px system-ui,sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(p.label, 0, 1);
+    g.restore();
   }
 }
 
+/* ---------------- parallax background art ---------------- */
+const BG = { far: null, mid: null };
+function loadBackgrounds() {
+  if (BG.far || BG.mid || typeof Image === 'undefined') return;
+  try {
+    const far = new Image(); far.src = 'assets/bg-far.webp';
+    far.onload = () => { BG.far = far; };
+    const mid = new Image(); mid.src = 'assets/bg-mid.webp';
+    mid.onload = () => { BG.mid = mid; };
+  } catch (e) { /* images are decoration; game runs without them */ }
+}
+// cover-fit draw; scrollX=0 centers a single copy, otherwise tiles horizontally
+function drawCover(img, scrollX, yBob) {
+  const s = Math.max(G.W / img.width, G.H / img.height);
+  const w = img.width * s, h = img.height * s;
+  const y = (G.H - h) / 2 + yBob;
+  if (!scrollX) { g.drawImage(img, (G.W - w) / 2, y, w, h); return; }
+  let x0 = -(scrollX % w);
+  if (x0 > 0) x0 -= w;
+  for (let x = x0; x < G.W; x += w) g.drawImage(img, x, y, w, h);
+}
 function render(t) {
   const u = G.u;
-  // sky
+  g.save();
+  if (G.shake > 0) g.translate((Math.random() - 0.5) * G.shake, (Math.random() - 0.5) * G.shake);
+  // sky base (also the fallback before art loads)
   const bg = g.createLinearGradient(0, 0, 0, G.H);
   bg.addColorStop(0, '#0b0620'); bg.addColorStop(0.5, '#131033'); bg.addColorStop(1, '#1b1040');
-  g.fillStyle = bg; g.fillRect(0, 0, G.W, G.H);
-  // stars (parallax)
+  g.fillStyle = bg; g.fillRect(-24, -24, G.W + 48, G.H + 48);
+  // parallax art
+  if (BG.far) drawCover(BG.far, G.bgFarOff, 0);
+  // sparse twinkling stars for depth
   for (const s of G.stars) {
     const sx = ((s.x - G.hillOff * s.par * 4) % G.W + G.W) % G.W;
-    g.globalAlpha = 0.3 + 0.4 * Math.sin(t * 1.5 + s.tw);
+    g.globalAlpha = 0.25 + 0.35 * Math.sin(t * 1.5 + s.tw);
     g.fillStyle = '#cfe4ff';
     g.fillRect(sx, s.y, s.r, s.r);
   }
   g.globalAlpha = 1;
-  // distant hills
-  g.fillStyle = '#241b4d';
-  g.beginPath(); g.moveTo(0, G.groundY);
-  for (let x = 0; x <= G.W; x += 40) {
-    g.lineTo(x, G.groundY - 26 * u - Math.sin((x + G.hillOff) * 0.008) * 10 * u);
-  }
-  g.lineTo(G.W, G.groundY); g.closePath(); g.fill();
+  if (BG.mid) drawCover(BG.mid, 0, Math.sin(t * 0.4) * 8);
   // tunnel surfaces
-  g.fillStyle = '#3b3358';
-  g.fillRect(0, G.groundY, G.W, G.H - G.groundY);
-  g.fillRect(0, 0, G.W, G.ceilY);
-  g.fillStyle = '#4c4470';
-  g.fillRect(0, G.groundY, G.W, 3);
-  g.fillRect(0, G.ceilY - 3, G.W, 3);
+  const surfGrad = g.createLinearGradient(0, G.groundY - 10 * u, 0, G.H);
+  surfGrad.addColorStop(0, '#4a4270'); surfGrad.addColorStop(1, '#241d3f');
+  g.fillStyle = surfGrad;
+  g.fillRect(-24, G.groundY, G.W + 48, G.H - G.groundY + 24);
+  const ceilGrad = g.createLinearGradient(0, 0, 0, G.ceilY + 10 * u);
+  ceilGrad.addColorStop(0, '#1c1733'); ceilGrad.addColorStop(1, '#4a4270');
+  g.fillStyle = ceilGrad;
+  g.fillRect(-24, -24, G.W + 48, G.ceilY + 24);
+  // glowing surface edges
+  g.fillStyle = G.s === 1 ? 'rgba(255,230,109,.35)' : 'rgba(255,230,109,.12)';
+  g.fillRect(-24, G.groundY, G.W + 48, 3);
+  g.fillStyle = G.s === -1 ? 'rgba(196,181,253,.4)' : 'rgba(196,181,253,.14)';
+  g.fillRect(-24, G.ceilY - 3, G.W + 48, 3);
   // scrolling surface ticks
-  g.fillStyle = 'rgba(255,255,255,.08)';
+  g.fillStyle = 'rgba(255,255,255,.07)';
   const tickGap = 24 * u;
   const off = G.hillOff % tickGap;
-  for (let x = -off; x < G.W; x += tickGap) {
+  for (let x = -off - 24; x < G.W + 24; x += tickGap) {
     g.fillRect(x, G.groundY + 8 * u, 3, 6 * u);
     g.fillRect(x + tickGap / 2, G.ceilY - 14 * u, 3, 6 * u);
   }
-  // gravity indicator: highlight the surface that is "down"
-  g.fillStyle = G.s === 1 ? 'rgba(255,230,109,.10)' : 'rgba(196,181,253,.10)';
-  if (G.s === 1) g.fillRect(0, G.groundY - 6 * u, G.W, 6 * u);
-  else g.fillRect(0, G.ceilY, G.W, 6 * u);
 
   // obstacles, player, particles
   for (const ob of G.obs) drawObstacle(ob, t);
-  if (G.screen === 'play' || G.screen === 'paused') drawPlayer(t);
+  if (G.screen === 'play' || G.screen === 'paused' || G.attract) drawPlayer(t);
   for (const p of G.parts) {
     g.globalAlpha = Math.max(0, 1 - p.t / p.life);
     g.fillStyle = p.color;
@@ -616,24 +932,77 @@ function render(t) {
       g.beginPath(); g.moveTo(x0, y); g.lineTo(x0 + 60, y); g.stroke();
     }
   }
+  g.restore();
 }
 
+/* ---------------- attract mode: living world behind menus ---------------- */
+function attractUpdate(dt) {
+  const u = G.u;
+  G.elapsed += dt;
+  G.speed = Math.min(CFG.speedMax * u, (CFG.speed0 + G.elapsed * CFG.speedGain) * u);
+  G.hillOff = (G.hillOff + G.speed * dt * 0.3) % (80 * u);
+  G.bgFarOff += G.speed * dt * 0.06;
+  // gentle autopilot hover
+  const midY = (G.ceilY + G.groundY) / 2;
+  const targetY = midY + Math.sin(G.elapsed * 0.7) * 50;
+  G.py += clamp(targetY - (G.py + G.ph / 2), -1, 1) * G.speed * dt * 0.5;
+  G.vy = 0;
+  G.onGround = false; // flight pose while hovering
+  for (let i = G.obs.length - 1; i >= 0; i--) {
+    const ob = G.obs[i];
+    ob.x -= G.speed * dt;
+    if (ob.x < -80) G.obs.splice(i, 1);
+  }
+  G.spawnT -= dt;
+  if (G.spawnT <= 0) { spawnPattern(); G.spawnT = spawnInterval(G.elapsed) * (0.8 + Math.random() * 0.4); }
+  for (let i = G.parts.length - 1; i >= 0; i--) {
+    const p = G.parts[i];
+    p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.t >= p.life) G.parts.splice(i, 1);
+  }
+}
 /* ---------------- HUD + screens ---------------- */
 function setScreen(name) {
   G.screen = name;
+  if (name !== 'play') Sfx.thrustStop();
   ['menu', 'over', 'custom', 'paused'].forEach(s => $('' + s).classList.toggle('hidden', s !== name));
   const inGame = name === 'play';
   $('hud').classList.toggle('hidden', !inGame);
   $('pauseBtn').classList.toggle('hidden', !inGame);
   $('dropBtn').classList.toggle('hidden', !inGame);
 }
+function refreshSoundBtn() {
+  const b = $('soundBtn');
+  if (b) b.textContent = Sfx.muted ? 'SOUND: OFF' : 'SOUND: ON';
+}
 function refreshMenu() {
   $('mBest').textContent = save.best;
   $('mShards').textContent = save.shards;
+  renderMissions();
+}
+function renderMissions() {
+  const box = $('missions');
+  if (!box) return;
+  box.innerHTML = '';
+  MISSIONS.forEach(m => {
+    const done = (save.mDone || []).includes(m.id);
+    const prog = Math.min(missionProgress(m.id), m.target);
+    const d = document.createElement('div');
+    d.className = 'mission' + (done ? ' done' : '');
+    d.textContent = (done ? 'DONE  ' : '') + m.name + '  ' + prog + '/' + m.target + '  (+' + m.reward + ')';
+    box.appendChild(d);
+  });
 }
 function showOver(score, isBest, shardsEarned) {
   setScreen('over');
-  $('scoreBig').textContent = score;
+  // score count-up
+  const el = $('scoreBig');
+  const t0 = Date.now();
+  (function tick() {
+    const k = Math.min(1, (Date.now() - t0) / 800);
+    el.textContent = Math.floor(score * (1 - Math.pow(1 - k, 3)));
+    if (k < 1 && G.screen === 'over') requestAnimationFrame(tick);
+  })();
   $('oBest').textContent = save.best;
   $('oShards').textContent = shardsEarned;
   $('newBest').classList.toggle('hidden', !isBest);
@@ -642,6 +1011,7 @@ function showOver(score, isBest, shardsEarned) {
   refreshMenu();
 }
 function startGame() {
+  G.attract = false;
   resetRun();
   setScreen('play');
 }
@@ -696,26 +1066,44 @@ function buildCustom() {
 }
 
 /* ---------------- boot ---------------- */
-let lastT = 0, readySent = false;
+let lastT = 0, readySent = false, wasThrust = false;
 function loop(ts) {
   requestAnimationFrame(loop);
   const t = ts / 1000;
   const dt = Math.max(0, Math.min(0.05, t - (lastT || t)));
   lastT = t;
   if (G.screen === 'play' && !G.paused) {
-    update(dt);
+    if (G.hitStop > 0) G.hitStop -= dt;
+    update(G.hitStop > 0 ? 0 : dt);
+    if (G.thrusting && !wasThrust) Sfx.thrustStart();
+    if (!G.thrusting && wasThrust) Sfx.thrustStop();
+    wasThrust = G.thrusting;
     const mult = comboMult(G.combo);
     $('hScore').textContent = Math.floor(G.score);
     $('hCombo').textContent = G.combo > 1 ? 'x' + mult.toFixed(1) : '';
     $('hShards').textContent = '◆ ' + (save.shards + G.runShards);
     $('fuelFill').style.width = Math.max(0, G.fuel) + '%';
     $('fuelFill').style.background = G.fuel < 25 ? '#f43f5e' : '';
+    const pw = [];
+    if (G.shieldT > 0) pw.push('SHD ' + Math.ceil(G.shieldT));
+    if (G.magnetT > 0) pw.push('MAG ' + Math.ceil(G.magnetT));
+    if (G.x2T > 0) pw.push('2X ' + Math.ceil(G.x2T));
+    $('hPow').textContent = pw.join('  ');
+  } else if (!G.paused && (G.screen === 'menu' || G.screen === 'custom' || G.screen === 'over')) {
+    if (!G.attract) { G.attract = true; resetRun(); }
+    attractUpdate(dt);
   }
   render(t);
   if (!readySent) { readySent = true; gameReady(); }
 }
 
 function bindUI() {
+  const initAudio = () => { Sfx.init(); Sfx.musicStart(); };
+  window.addEventListener('pointerdown', initAudio);
+  window.addEventListener('keydown', initAudio);
+  document.addEventListener('click', e => {
+    if (e.target && e.target.closest && e.target.closest('.btn')) Sfx.click();
+  });
   $('playBtn').onclick = startGame;
   $('againBtn').onclick = startGame;
   $('customBtn').onclick = () => { G.prevScreen = 'menu'; buildCustom(); setScreen('custom'); };
@@ -728,6 +1116,7 @@ function bindUI() {
   $('pauseBtn').onclick = pauseGame;
   $('resumeBtn').onclick = resumeGame;
   $('restartBtn').onclick = () => { G.paused = false; startGame(); };
+  $('soundBtn').onclick = () => { Sfx.init(); Sfx.setMuted(!Sfx.muted); refreshSoundBtn(); };
   $('quitBtn').onclick = () => { G.paused = false; refreshMenu(); setScreen('menu'); };
   $('reviveBtn').onclick = async () => {
     if (G.usedRevive) return;
@@ -735,6 +1124,7 @@ function bindUI() {
     if (ok) {
       G.usedRevive = true;
       G.shieldT = CFG.shieldTime;
+      Sfx.revive();
       G.obs = G.obs.filter(o => (o.x === undefined || o.x > G.px + 30 * G.u || o.type === 'shard' || o.type === 'gate'));
       setScreen('play');
     }
@@ -747,6 +1137,7 @@ function bindUI() {
   window.addEventListener('keydown', e => {
     if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); if (!e.repeat) setHeld(true); }
     if (e.code === 'ArrowDown') { e.preventDefault(); if (!e.repeat) drop(); }
+    if (e.code === 'KeyM') { Sfx.init(); Sfx.setMuted(!Sfx.muted); refreshSoundBtn(); }
     if (e.code === 'Escape') {
       if (G.screen === 'custom') $('customBackBtn').click();
       else if (G.screen === 'paused') resumeGame();
@@ -765,6 +1156,7 @@ async function boot() {
   cv = $('c'); g = cv.getContext('2d');
   resize();
   bindUI();
+  loadBackgrounds();
   await initBridge();
   await loadSave();
   watchHostLifecycle(pauseGame);

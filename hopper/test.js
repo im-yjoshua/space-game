@@ -47,3 +47,23 @@ test('canAfford gates unlocks', () => {
   assert.equal(L.canAfford(50, 50), true);
   assert.equal(L.canAfford(49, 50), false);
 });
+
+test('missions complete once and pay out', () => {
+  const T = L._test();
+  T.save.mDone = [];
+  T.save.mProg = { score2500: 0, shards40: 0, gates4: 0 };
+  const before = T.save.shards;
+  T.save.mProg.shards40 = 40;
+  assert.equal(T.checkMission('shards40'), true);
+  assert.ok(T.save.shards > before);
+  assert.equal(T.checkMission('shards40'), false); // no double payout
+  assert.equal(T.checkMission('nope'), false);
+});
+
+test('power-ups set their timers', () => {
+  const T = L._test();
+  T.G.shieldT = 0; T.G.magnetT = 0; T.G.x2T = 0;
+  T.applyPow('shield'); assert.ok(T.G.shieldT > 0);
+  T.applyPow('magnet'); assert.ok(T.G.magnetT > 0);
+  T.applyPow('x2'); assert.ok(T.G.x2T > 0);
+});
