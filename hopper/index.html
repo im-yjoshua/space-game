@@ -35,11 +35,9 @@ h2{letter-spacing:8px;font-size:30px}
 .mission{font-size:12px;opacity:.78;letter-spacing:1px;text-align:center;line-height:1.9}
 .mission.done{color:#7df9ff;opacity:1}
 #missions{margin-top:4px}
-#fuelWrap{width:130px;height:12px;border-radius:7px;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.25);overflow:hidden}
-#fuelFill{height:100%;width:100%;border-radius:6px;background:linear-gradient(90deg,#ff9f1c,#ffe66d)}
 #pauseBtn{position:absolute;top:calc(10px + env(safe-area-inset-top));right:12px;pointer-events:auto;width:44px;height:44px;border-radius:12px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;font-size:16px;font-weight:800;cursor:pointer}
-#dropBtn{position:absolute;bottom:calc(26px + env(safe-area-inset-bottom));right:18px;pointer-events:auto;width:92px;height:92px;border-radius:50%;border:2px solid rgba(255,159,28,.55);background:radial-gradient(circle at 50% 35%,rgba(255,159,28,.28),rgba(255,159,28,.10));color:#ffb703;font-size:14px;font-weight:800;letter-spacing:1px;cursor:pointer;font-family:inherit}
-#dropBtn:active{transform:scale(.93)}
+#duckBtn{position:absolute;bottom:calc(26px + env(safe-area-inset-bottom));right:18px;pointer-events:auto;width:92px;height:92px;border-radius:50%;border:2px solid rgba(125,249,255,.55);background:radial-gradient(circle at 50% 35%,rgba(125,249,255,.28),rgba(125,249,255,.10));color:#7df9ff;font-size:14px;font-weight:800;letter-spacing:1px;cursor:pointer;font-family:inherit}
+#duckBtn:active{transform:scale(.93)}
 #scoreBig{font-size:52px;font-weight:800;letter-spacing:2px}
 #newBest{color:#ffe66d;font-weight:800;letter-spacing:3px;font-size:14px}
 .pickrow{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;max-width:420px}
@@ -57,21 +55,20 @@ h2{letter-spacing:8px;font-size:30px}
 <div id="ui">
   <div id="hud" class="hidden">
     <span id="hScore">0</span><span id="hCombo"></span>
-    <div id="fuelWrap" title="Fuel"><div id="fuelFill"></div></div>
     <span id="hPow"></span>
     <span id="hShards">◆ 0</span>
   </div>
   <div id="toast" class="hidden"></div>
   <button id="pauseBtn" class="hidden" aria-label="Pause">| |</button>
-  <button id="dropBtn" class="hidden" aria-label="Drop">DROP</button>
+  <button id="duckBtn" class="hidden" aria-label="Duck">DUCK</button>
 
   <div id="menu" class="screen">
     <h1>STAR HOPPER</h1>
-    <div class="sub">HOLD TO FLY &middot; MIND THE FUEL</div>
+    <div class="sub">JUMP &middot; DUCK &middot; SURVIVE</div>
     <div class="stats"><span>BEST <b id="mBest">0</b></span><span>◆ <b id="mShards">0</b></span></div>
     <button class="btn" id="playBtn">PLAY</button>
-    <button class="btn ghost" id="customBtn">JETPACKS</button>
-    <div class="hint">Hold anywhere, Space, or Up to fly. Release to fall.<br/>Down key or DROP slams you down.<br/>Flying burns fuel, running refills it.<br/>Watch for gravity gates.</div>
+    <button class="btn ghost" id="customBtn">SUITS</button>
+    <div class="hint">Tap, Space, or Up to jump.<br/>Hold Down or DUCK to bow down.<br/>Down in mid-air slams you down.<br/>It keeps getting faster.</div>
     <div id="missions"></div>
   </div>
 
@@ -82,14 +79,14 @@ h2{letter-spacing:8px;font-size:30px}
     <div class="stats"><span>BEST <b id="oBest">0</b></span><span>+◆ <b id="oShards">0</b></span></div>
     <button class="btn" id="againBtn">PLAY AGAIN</button>
     <button class="btn ghost" id="reviveBtn">REVIVE (AD)</button>
-    <button class="btn ghost small" id="overCustomBtn">JETPACKS</button>
+    <button class="btn ghost small" id="overCustomBtn">SUITS</button>
     <button class="btn ghost small" id="menuBtn">MENU</button>
   </div>
 
   <div id="custom" class="screen hidden">
     <h2>HANGAR</h2>
     <div class="stats"><span>◆ <b id="cShards">0</b> SHARDS</span></div>
-    <div class="secLabel">JETPACK</div>
+    <div class="secLabel">SUIT</div>
     <div class="pickrow" id="packRow"></div>
     <button class="btn" id="customBackBtn">DONE</button>
     <div class="hint">Earn shards by playing. Tap a locked pack to unlock it.</div>

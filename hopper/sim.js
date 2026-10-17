@@ -89,33 +89,42 @@ function assert(c, msg) { if (!c) { console.error('FAIL:', msg); process.exit(1)
   assert(G.score > 0, 'score should accrue, got ' + G.score);
   assert(G.obs.length > 0, 'obstacles should have spawned');
 
-  // hold to fly: rises + burns fuel
-  const y0 = G.py, f0 = G.fuel;
-  T.setHeld(true);
-  pump(45);
-  T.setHeld(false);
-  assert(G.py < y0, 'holding should make the hopper rise');
-  assert(G.fuel < f0, 'thrusting should burn fuel, ' + f0 + ' -> ' + G.fuel);
-
-  // sudden drop slams down
-  T.setHeld(true); pump(20); T.setHeld(false);
-  const vyBefore = G.vy;
-  T.drop();
-  assert(G.vy > Math.max(0, vyBefore), 'drop should slam downward');
-  pump(90);
-  assert(G.onGround, 'hopper should land after a drop');
-
-  // fuel refills on ground
-  const f1 = G.fuel;
-  pump(60);
-  assert(G.fuel >= f1, 'fuel should refill on ground');
-
-  // gravity gate flips the world
-  G.obs.push({ type: 'gate', x: G.px + 10, w: 6 * G.u, passed: false });
-  pump(10);
-  assert(G.s === -1, 'passing a gate should flip gravity, s=' + G.s);
+  // jump: rises ballistically, then lands
+  const y0 = G.py;
+  T.jump();
+  pump(20);
+  assert(G.py < y0, 'jump should lift the hopper');
   pump(120);
-  assert(G.onGround, 'hopper should land on the ceiling when flipped');
+  assert(G.onGround, 'hopper should land after a jump');
+
+  // down in mid-air slams down (dino-style fast fall)
+  T.jump(); pump(10);
+  T.setDuck(true);
+  assert(G.vy > 0, 'ducking mid-air should slam downward, vy=' + G.vy);
+  pump(60);
+  T.setDuck(false);
+  assert(G.onGround, 'hopper should land after a fast fall');
+
+  // ducking on the ground bows down (smaller hitbox)
+  T.setDuck(true);
+  assert(G.ducking === true, 'ducking state should engage on ground');
+  T.setDuck(false);
+
+  // rock bar: standing into it kills, ducking under it survives
+  T.startGame(); pump(10);
+  G.shieldT = 9999;
+  G.obs.push({ type: 'bar', x: G.px + 5, y: G.groundY - 12 * G.u, w: 12 * G.u, h: 4.5 * G.u, counted: false, seed: 1 });
+  G.shieldT = 0;
+  pump(10);
+  assert(G.screen === 'over', 'running into a rock bar should kill');
+  T.startGame(); pump(10);
+  T.setDuck(true); pump(5);
+  G.obs.push({ type: 'bar', x: G.px + 5, y: G.groundY - 12 * G.u, w: 12 * G.u, h: 4.5 * G.u, counted: false, seed: 1 });
+  G.shieldT = 0; // no shield: only the duck saves us
+  pump(10);
+  assert(G.screen === 'play', 'ducking under a rock bar should survive');
+  T.setDuck(false);
+  G.shieldT = 9999;
 
   // shard collection
   const shardsBefore = G.runShards;
@@ -154,30 +163,31 @@ function assert(c, msg) { if (!c) { console.error('FAIL:', msg); process.exit(1)
   T.die();
   assert(adCalls.some(c => c[0] === 'interstitial' && c[1] === 'game_over'), '3rd game over should attempt interstitial');
 
-  // customize screen: render all jetpack previews, then equip the priciest
+  // customize screen: render all suit previews, then equip the priciest
   T.buildCustom();
   T.save.shards = 10000;
   T.save.uP.push('saucer'); T.save.pack = 'saucer';
-  assert(T.packSkin().id === 'saucer', 'skin equip works');
+  assert(T.suitSkin().id === 'saucer', 'skin equip works');
   T.startGame(); pump(120); // render a while with saucer equipped
 
   // persistence round-trip
   const saved = JSON.parse(store['hopper_save_v1'] || 'null');
   assert(saved && typeof saved.best === 'number', 'save persisted');
 
-  // long soak
+  // long soak: auto-jump to survive
   T.startGame();
-  T.setHeld(true);
-  pump(300);
-  T.setHeld(false);
-  pump(300);
+  for (let s = 0; s < 20; s++) {
+    if (G.onGround && G.screen === 'play') T.jump();
+    pump(30);
+    if (G.screen !== 'play') break;
+  }
 
   // attract mode: world drifts behind the game-over screen without errors
   T.die();
   pump(150);
   assert(G.attract === true, 'attract mode should engage on menu-family screens');
 
-  console.log('SIM OK: fly/drop/flip/shards/death/revive/ads/save - no exceptions.');
+  console.log('SIM OK: jump/duck/fastfall/bar/shards/death/revive/ads/save - no exceptions.');
   console.log('ad calls:', JSON.stringify(adCalls));
   process.exit(0);
 })().catch(e => { console.error('SIM THREW:', e); process.exit(1); });

@@ -23,11 +23,29 @@ test('gravity flip swaps the running surface', () => {
   assert.equal(L.surfTop(-1, 820, 180, 90), 180); // standing on ceiling
 });
 
-test('fuel burns while thrusting and refills on ground', () => {
-  assert.ok(L.burnFuel(100, 1) < 100);
-  assert.equal(L.burnFuel(5, 10), 0); // clamps at zero
-  assert.ok(L.refillFuel(50, 1) > 50);
-  assert.equal(L.refillFuel(99, 10), L.CFG.fuelMax); // clamps at max
+test('jump launches upward only when grounded', () => {
+  const T = L._test();
+  const G = T.G;
+  G.screen = 'play'; G.paused = false;
+  G.u = 8; G.s = 1; G.onGround = true; G.vy = 0;
+  T.jump();
+  assert.ok(G.vy < 0, 'jump should set upward velocity, got ' + G.vy);
+  assert.equal(G.onGround, false);
+  const vy = G.vy;
+  T.jump(); // mid-air: no double jump
+  assert.equal(G.vy, vy);
+});
+
+test('ducking shrinks the hitbox with feet planted', () => {
+  const T = L._test();
+  const G = T.G;
+  G.px = 100; G.py = 700; G.pw = 48; G.ph = 72;
+  G.duckHeld = false; G.ducking = false; G.onGround = true;
+  const full = T.playerBox();
+  G.duckHeld = true; G.ducking = true;
+  const ducked = T.playerBox();
+  assert.ok(ducked.h < full.h * 0.7, 'ducked height should shrink');
+  assert.ok(Math.abs((ducked.y + ducked.h) - (full.y + full.h)) < 0.01, 'feet stay planted');
 });
 
 test('speed ramps up and caps; spawns get denser and floor', () => {
@@ -51,7 +69,7 @@ test('canAfford gates unlocks', () => {
 test('missions complete once and pay out', () => {
   const T = L._test();
   T.save.mDone = [];
-  T.save.mProg = { score2500: 0, shards40: 0, gates4: 0 };
+  T.save.mProg = { score2500: 0, shards40: 0, survive90: 0 };
   const before = T.save.shards;
   T.save.mProg.shards40 = 40;
   assert.equal(T.checkMission('shards40'), true);

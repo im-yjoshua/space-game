@@ -8,15 +8,10 @@ const TAU = Math.PI * 2;
 /* ---------------- tuning (units: u = H/100) ---------------- */
 const CFG = {
   grav: 55,         // gravity accel, u/s^2
-  thrust: 130,      // jetpack accel against gravity, u/s^2
+  jumpV: 46,        // jump takeoff speed, u/s
+  fastFall: 70,     // down-in-air slam speed, u/s
   maxFall: 42,      // max fall speed, u/s
-  maxRise: 34,      // max rise speed, u/s
-  dropSpeed: 70,    // sudden-drop speed, u/s
-  dropLock: 0.25,   // s of ignored thrust input after a drop
-  fling: 34,        // gravity-gate transition speed toward the new surface, u/s
-  fuelMax: 100,
-  fuelBurn: 30,     // per s while thrusting
-  fuelRefill: 48,   // per s while running on the surface
+  duckScale: 0.55,  // hitbox height factor while ducking
   speed0: 44,       // world speed, u/s
   speedGain: 1.15,  // u/s gained per second
   speedMax: 98,
@@ -27,8 +22,6 @@ const CFG = {
   nearGap: 1.5,     // x player heights: near-miss vertical window
   comboWindow: 4,
   maxMult: 5,
-  gateAt: 40,       // first gravity gate no earlier than this (s)
-  gateEvery: 28,    // min gap between gates (s)
   shieldTime: 3,
 };
 
@@ -47,52 +40,22 @@ function circleRect(cx, cy, r, rc) {
 function flipSign(s) { return -s; }
 // y of the player's TOP edge when standing on the current surface
 function surfTop(s, groundY, ceilY, ph) { return s === 1 ? groundY - ph : ceilY; }
-function burnFuel(f, dt) { return Math.max(0, f - CFG.fuelBurn * dt); }
-function refillFuel(f, dt) { return Math.min(CFG.fuelMax, f + CFG.fuelRefill * dt); }
 function speedAt(t) { return Math.min(CFG.speedMax, CFG.speed0 + t * CFG.speedGain); }
 function spawnInterval(t) { return Math.max(CFG.spawnMin, CFG.spawn0 - t * CFG.spawnRamp); }
 function comboMult(combo) { return Math.min(1 + combo * 0.1, CFG.maxMult); }
 function canAfford(shards, cost) { return shards >= cost; }
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { TAU, CFG, clamp, rectsOverlap, circleRect, flipSign, surfTop, burnFuel, refillFuel, speedAt, spawnInterval, comboMult, canAfford };
+  module.exports = { TAU, CFG, clamp, rectsOverlap, circleRect, flipSign, surfTop, speedAt, spawnInterval, comboMult, canAfford };
 }
 /* node-only test handle */
 if (typeof module !== 'undefined' && module.exports) {
   module.exports._test = function () {
-    return { G, save, CFG: CFG, startGame, drop, setHeld, die, buildCustom, update, render, PACKS, packSkin, spawnPattern, applyPow, checkMission, missionProgress, MISSIONS, POWERS, Sfx };
+    return { G, save, CFG: CFG, startGame, jump, setDuck, die, buildCustom, update, render, SUITS, suitSkin, spawnPattern, applyPow, checkMission, missionProgress, MISSIONS, POWERS, Sfx, playerBox };
   };
 }
 
-/* ---------------- jetpack skins (drawn on the player's back) ---------------- */
-function packBase(g, w, h, c1, c2) {
-  g.fillStyle = c1;
-  g.beginPath();
-  if (g.roundRect) g.roundRect(-w / 2, -h / 2, w, h, w * 0.25);
-  else g.rect(-w / 2, -h / 2, w, h);
-  g.fill();
-  g.fillStyle = c2;
-  g.fillRect(-w / 2, -h * 0.12, w, h * 0.24);
-  g.fillStyle = '#2b2f3a';
-  g.beginPath();
-  g.moveTo(-w * 0.3, h / 2); g.lineTo(0, h / 2 + h * 0.28); g.lineTo(w * 0.3, h / 2);
-  g.closePath(); g.fill();
-}
-function flame(g, w, h, t) {
-  const f = 0.7 + 0.3 * Math.sin(t * 40);
-  g.fillStyle = '#ffb703';
-  g.beginPath();
-  g.moveTo(-w * 0.22, h / 2 + h * 0.28);
-  g.lineTo(0, h / 2 + h * (0.28 + 0.55 * f));
-  g.lineTo(w * 0.22, h / 2 + h * 0.28);
-  g.closePath(); g.fill();
-  g.fillStyle = '#ffe66d';
-  g.beginPath();
-  g.moveTo(-w * 0.1, h / 2 + h * 0.28);
-  g.lineTo(0, h / 2 + h * (0.28 + 0.32 * f));
-  g.lineTo(w * 0.1, h / 2 + h * 0.28);
-  g.closePath(); g.fill();
-}
-const PACKS = [
+/* ---------------- suit skins (astronaut suit color variants) ---------------- */
+const SUITS = [
   { id: 'spark',   name: 'SPARK',   cost: 0,   c1: '#e63946', c2: '#ffb703' },
   { id: 'dart',    name: 'DART',    cost: 50,  c1: '#22d3ee', c2: '#a5f3fc' },
   { id: 'shuttle', name: 'SHUTTLE', cost: 150, c1: '#f97316', c2: '#fdba74' },
@@ -101,7 +64,7 @@ const PACKS = [
 
 /* ---------------- save data ---------------- */
 const SAVE_KEY = 'hopper_save_v1';
-let save = { best: 0, shards: 0, pack: 'spark', uP: ['spark'], games: 0, mProg: { score2500: 0, shards40: 0, gates4: 0 }, mDone: [] };
+let save = { best: 0, shards: 0, pack: 'spark', uP: ['spark'], games: 0, mProg: { score2500: 0, shards40: 0, survive90: 0 }, mDone: [] };
 
 /* ---------------- Playgama Bridge adapter (defensive: game runs without it) ---------------- */
 let BR = null;
@@ -141,7 +104,7 @@ async function loadSave() {
     if (typeof s.pack === 'string') save.pack = s.pack;
     if (Array.isArray(s.uP)) save.uP = s.uP;
     if (typeof s.games === 'number') save.games = s.games;
-    if (s.mProg && typeof s.mProg === 'object') save.mProg = Object.assign({ score2500: 0, shards40: 0, gates4: 0 }, s.mProg);
+    if (s.mProg && typeof s.mProg === 'object') save.mProg = Object.assign({ score2500: 0, shards40: 0, survive90: 0 }, s.mProg);
     if (Array.isArray(s.mDone)) save.mDone = s.mDone;
   }
 }
@@ -198,7 +161,7 @@ function watchHostLifecycle(onPause) {
 /* ---------------- audio: synthesized SFX + music, zero assets ---------------- */
 const Sfx = {
   ctx: null, master: null, musicBus: null, noiseBuf: null,
-  muted: false, thrust: null, musicTimer: null, mStep: 0,
+  muted: false, musicTimer: null, mStep: 0,
   init() {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); return; }
     try {
@@ -262,29 +225,10 @@ const Sfx = {
   dropSfx() { this.noise({ dur: 0.25, vol: 0.22, freq: 3000, slideTo: 300, type: 'highpass' }); },
   thud()    { this.noise({ dur: 0.12, vol: 0.13, freq: 350 }); },
   explosion(){ this.noise({ dur: 0.5, vol: 0.45, freq: 900, slideTo: 80 }); this.tone({ f: 160, f2: 40, dur: 0.5, type: 'sawtooth', vol: 0.28 }); },
-  gate()    { this.tone({ f: 220, f2: 880, dur: 0.35, type: 'sawtooth', vol: 0.18 }); this.tone({ f: 440, f2: 1760, dur: 0.35, vol: 0.1, delay: 0.05 }); },
   over()    { [392, 330, 262, 196].forEach((f, i) => this.tone({ f, dur: 0.22, type: 'triangle', vol: 0.22, delay: 0.15 + i * 0.16 })); },
   revive()  { [262, 392, 523, 784].forEach((f, i) => this.tone({ f, dur: 0.15, vol: 0.18, delay: i * 0.08 })); },
   power()   { this.tone({ f: 523, f2: 1046, dur: 0.25, vol: 0.2 }); },
-  thrustStart() {
-    if (!this.ok || this.thrust) return;
-    try {
-      const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf; src.loop = true;
-      const flt = this.ctx.createBiquadFilter(); flt.type = 'bandpass'; flt.frequency.value = 420; flt.Q.value = 0.6;
-      const gn = this.ctx.createGain(); gn.gain.value = 0.0001;
-      gn.gain.setTargetAtTime(0.15, this.ctx.currentTime, 0.06);
-      src.connect(flt); flt.connect(gn); gn.connect(this.master); src.start();
-      this.thrust = { src, gn };
-    } catch (e) { /* ignore */ }
-  },
-  thrustStop() {
-    if (!this.thrust || !this.ctx) { this.thrust = null; return; }
-    const th = this.thrust; this.thrust = null;
-    try {
-      th.gn.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.05);
-      setTimeout(() => { try { th.src.stop(); } catch (e) {} }, 220);
-    } catch (e) { /* ignore */ }
-  },
+  jumpSfx() { this.noise({ dur: 0.18, vol: 0.16, freq: 500, slideTo: 2400, type: 'bandpass', q: 1.2 }); },
   musicStart() {
     if (!this.ctx || this.musicTimer) return;
     const bass = [110, 0, 110, 0, 130.8, 0, 98, 0, 110, 0, 110, 0, 146.8, 0, 130.8, 98];
@@ -303,7 +247,7 @@ const Sfx = {
 const MISSIONS = [
   { id: 'score2500', name: 'Score 2,500 in one run', target: 2500, reward: 60 },
   { id: 'shards40', name: 'Collect 40 shards', target: 40, reward: 50 },
-  { id: 'gates4', name: 'Pass 4 gravity gates', target: 4, reward: 70 },
+  { id: 'survive90', name: 'Survive 90 seconds in one run', target: 90, reward: 70 },
 ];
 function missionProgress(id) {
   return Math.floor((save.mProg && save.mProg[id]) || 0);
@@ -354,11 +298,11 @@ const G = {
   paused: false,
   // run state (positions in px)
   px: 0, py: 0, vy: 0, pw: 0, ph: 0,
-  s: 1,                 // gravity sign: 1 normal, -1 flipped
-  fuel: 100, held: false, dropT: 0, onGround: true, thrusting: false,
+  s: 1,                 // gravity sign (always 1 in dino mode)
+  onGround: true, duckHeld: false, ducking: false,
   elapsed: 0, speed: 0, score: 0, combo: 0, comboT: 0, runShards: 0,
   obs: [], parts: [],
-  spawnT: 0, lastGate: -99, shieldT: 0, usedRevive: false,
+  spawnT: 0, shieldT: 0, usedRevive: false,
   hitStop: 0, shake: 0, squashT: 0, prevGround: true,
   magnetT: 0, x2T: 0,
   // layout
@@ -367,10 +311,13 @@ const G = {
   prevScreen: 'menu',
 };
 
-function packSkin() { return PACKS.find(p => p.id === save.pack) || PACKS[0]; }
+function suitSkin() { return SUITS.find(p => p.id === save.pack) || SUITS[0]; }
 function playerBox() {
   const pad = (1 - CFG.hitPad) / 2;
-  return { x: G.px + G.pw * pad, y: G.py + G.ph * pad, w: G.pw * (1 - 2 * pad), h: G.ph * (1 - 2 * pad) };
+  let h = G.ph * (1 - 2 * pad);
+  let y = G.py + G.ph * pad;
+  if (G.ducking) { const dh = h * CFG.duckScale; y += h - dh; h = dh; } // bow down: feet stay planted
+  return { x: G.px + G.pw * pad, y, w: G.pw * (1 - 2 * pad), h };
 }
 
 function resetRun() {
@@ -379,12 +326,12 @@ function resetRun() {
   G.px = Math.min(G.W * 0.3, 45 * G.u);
   G.pw = 6 * G.u; G.ph = 9 * G.u;
   G.py = surfTop(1, G.groundY, G.ceilY, G.ph);
-  G.vy = 0; G.fuel = CFG.fuelMax; G.held = false; G.dropT = 0;
-  G.onGround = true; G.thrusting = false;
+  G.vy = 0;
+  G.onGround = true; G.duckHeld = false; G.ducking = false;
   G.elapsed = 0; G.speed = CFG.speed0 * G.u; G.score = 0;
   G.combo = 0; G.comboT = 0; G.runShards = 0;
   G.obs = []; G.parts = [];
-  G.spawnT = 1.2; G.lastGate = -99; G.shieldT = 0; G.usedRevive = false;
+  G.spawnT = 1.2; G.shieldT = 0; G.usedRevive = false;
   G.hitStop = 0; G.shake = 0; G.squashT = 0; G.prevGround = true;
   G.magnetT = 0; G.x2T = 0;
   G.paused = false;
@@ -395,27 +342,28 @@ function spawnPattern() {
   const u = G.u, X = G.W + 60;
   const t = G.elapsed;
   const roll = Math.random();
-  // gravity gate: rare, only after gateAt, spaced out
-  if (t > CFG.gateAt && t - G.lastGate > CFG.gateEvery * (0.8 + Math.random() * 0.6) && roll < 0.18) {
-    G.obs.push({ type: 'gate', x: X, w: 6 * u, passed: false });
-    G.lastGate = t;
+  if (roll < 0.16) {
+    // floating rock bar: bow down under it (or jump clean over)
+    const bw = (10 + Math.random() * 8) * u, bh = 4.5 * u;
+    const by = G.groundY - (12.5 + Math.random() * 3) * u;
+    G.obs.push({ type: 'bar', x: X, y: by, w: bw, h: bh, counted: false, seed: Math.random() * 10 });
     return;
   }
-  if (roll < 0.30) {
-    // floor spikes
+  if (roll < 0.38) {
+    // floor spikes: jump them
     const n = 1 + Math.floor(Math.random() * (t > 30 ? 3 : 2));
     for (let i = 0; i < n; i++) {
       const w = 6 * u, h = (6 + Math.random() * 3) * u;
       G.obs.push({ type: 'spike', side: 'floor', x: X + i * 16 * u, w, h, counted: false });
     }
-  } else if (roll < 0.55) {
-    // ceiling spikes
+  } else if (roll < 0.60) {
+    // ceiling spikes: do not jump into them
     const n = 1 + Math.floor(Math.random() * (t > 30 ? 3 : 2));
     for (let i = 0; i < n; i++) {
       const w = 6 * u, h = (6 + Math.random() * 3) * u;
       G.obs.push({ type: 'spike', side: 'ceil', x: X + i * 16 * u, w, h, counted: false });
     }
-  } else if (roll < 0.78) {
+  } else if (roll < 0.80) {
     // mines at staggered heights, some drifting
     const n = 2 + Math.floor(Math.random() * 2);
     let y = G.ceilY + (12 + Math.random() * 20) * u;
@@ -457,20 +405,13 @@ function update(dt) {
   if (G.shieldT > 0) G.shieldT -= dt;
   if (G.magnetT > 0) G.magnetT -= dt;
   if (G.x2T > 0) G.x2T -= dt;
-  if (G.dropT > 0) G.dropT -= dt;
   if (G.shake > 0) G.shake = Math.max(0, G.shake - dt * 46);
 
-  // thrust
-  G.thrusting = false;
-  if (G.dropT <= 0 && G.held && G.fuel > 0) {
-    G.vy -= CFG.thrust * u * G.s * dt;
-    G.fuel = burnFuel(G.fuel, dt);
-    G.thrusting = true;
-  }
-  // gravity
+  // gravity: pure ballistic jump, dino-style
   G.vy += CFG.grav * u * G.s * dt;
-  G.vy = clamp(G.vy, -CFG.maxRise * u, CFG.maxFall * u);
+  if (G.vy > CFG.maxFall * u) G.vy = CFG.maxFall * u;
   G.py += G.vy * dt;
+  G.ducking = G.duckHeld && G.onGround;
 
   // surfaces
   const s = G.s;
@@ -497,8 +438,6 @@ function update(dt) {
   }
   G.prevGround = G.onGround;
   if (G.squashT > 0) G.squashT -= dt;
-  if (G.onGround && !G.thrusting) G.fuel = refillFuel(G.fuel, dt);
-
   // spawn
   G.spawnT -= dt;
   if (G.spawnT <= 0) {
@@ -506,38 +445,16 @@ function update(dt) {
     G.spawnT = spawnInterval(G.elapsed) * (0.8 + Math.random() * 0.4);
   }
 
-  // thrust flame particles
-  if (G.thrusting && Math.random() < 0.6) {
-    const bx = G.px - 2 * u, by = G.py + G.ph * 0.55;
-    G.parts.push({ x: bx, y: by, vx: -G.speed * 0.4, vy: (Math.random() - 0.5) * 40, life: 0.3, t: 0, color: '#ffb703', r: 2.5 });
-  }
-
   // move + interact obstacles
   const pb = playerBox();
   const pcx = pb.x + pb.w / 2, pcy = pb.y + pb.h / 2;
   for (let i = G.obs.length - 1; i >= 0; i--) {
     const ob = G.obs[i];
-    const prevX = ob.x;
     ob.x -= G.speed * dt;
     if (ob.type === 'mine' && ob.drift) {
       ob.y = clamp(ob.baseY + Math.sin(G.elapsed * 2.2 + ob.seed) * ob.amp, G.ceilY + 6 * u, G.groundY - 6 * u);
     }
 
-    if (ob.type === 'gate') {
-      if (!ob.passed && prevX >= G.px && ob.x < G.px) {
-        ob.passed = true;
-        G.s = flipSign(G.s);
-        G.vy = CFG.fling * G.u * G.s; // fling toward the new surface
-        G.onGround = false;
-        save.mProg.gates4++;
-        checkMission('gates4');
-        Sfx.gate();
-        G.shake = Math.max(G.shake, 7);
-        burst(G.px + G.pw / 2, (G.ceilY + G.groundY) / 2, '#c4b5fd', 24, 220);
-      }
-      if (ob.x < -60) G.obs.splice(i, 1);
-      continue;
-    }
     if (ob.type === 'shard') {
       if (!ob.taken) {
         if (G.magnetT > 0) {
@@ -576,7 +493,7 @@ function update(dt) {
       continue;
     }
 
-    // deadly: spike or mine
+    // deadly: spike, rock bar, or mine
     let hit = false;
     if (ob.type === 'spike') {
       const r = ob.side === 'floor'
@@ -584,6 +501,10 @@ function update(dt) {
         : { x: ob.x, y: G.ceilY, w: ob.w, h: ob.h };
       hit = rectsOverlap(pb, r);
       ob._cx = ob.x + ob.w / 2; ob._cy = r.y + r.h / 2; ob._hw = ob.w / 2; ob._hh = r.h / 2;
+    } else if (ob.type === 'bar') {
+      const r = { x: ob.x, y: ob.y, w: ob.w, h: ob.h };
+      hit = rectsOverlap(pb, r);
+      ob._cx = ob.x + ob.w / 2; ob._cy = ob.y + ob.h / 2; ob._hw = ob.w / 2; ob._hh = ob.h / 2;
     } else { // mine
       hit = circleRect(ob.x, ob.y, ob.r, pb);
       ob._cx = ob.x; ob._cy = ob.y; ob._hw = ob.r; ob._hh = ob.r;
@@ -633,6 +554,8 @@ function die() {
   if (isBest) save.best = finalScore;
   save.mProg.score2500 = Math.max(save.mProg.score2500, finalScore);
   checkMission('score2500');
+  save.mProg.survive90 = Math.max(save.mProg.survive90, Math.floor(G.elapsed));
+  checkMission('survive90');
   save.shards += G.runShards;
   save.games++;
   persist();
@@ -640,17 +563,27 @@ function die() {
   if (save.games % 3 === 0) showInterstitial('game_over');
 }
 
-function drop() {
+function jump() {
   if (G.screen !== 'play' || G.paused) return;
-  G.vy = CFG.dropSpeed * G.u * G.s;
-  G.dropT = CFG.dropLock;
-  G.held = false;
-  Sfx.dropSfx();
+  if (G.onGround) {
+    G.vy = -CFG.jumpV * G.u * G.s;
+    G.onGround = false;
+    G.ducking = false;
+    Sfx.jumpSfx();
+    const fx = G.px + G.pw / 2, fy = G.s === 1 ? G.groundY : G.ceilY;
+    for (let i = 0; i < 6; i++) {
+      G.parts.push({ x: fx + (Math.random() - 0.5) * G.pw, y: fy, vx: (Math.random() - 0.5) * 120, vy: -Math.random() * 90 * G.s, life: 0.35, t: 0, color: '#b8b2a7', r: 2 });
+    }
+  }
 }
-function setHeld(v) {
-  if (G.screen !== 'play' || G.paused) return;
-  if (v && G.dropT > 0) return;
-  G.held = !!v;
+function setDuck(d) {
+  if (G.screen !== 'play' || G.paused) { G.duckHeld = false; return; }
+  if (d && !G.onGround) {
+    // dino-style: down in mid-air slams you down
+    G.vy = CFG.fastFall * G.u * G.s;
+    Sfx.dropSfx();
+  }
+  G.duckHeld = !!d;
 }
 
 /* ---------------- rendering + DOM (browser only) ---------------- */
@@ -682,12 +615,12 @@ function resize() {
 
 function drawPlayer(t) {
   const u = G.u, x = G.px, y = G.py, w = G.pw, h = G.ph;
-  const skin = packSkin();
+  const skin = suitSkin();
   const sq = G.squashT > 0 ? G.squashT / 0.16 : 0; // landing squash 1..0
   g.save();
   g.translate(x + w / 2, y + h / 2);
   if (G.s === -1) g.rotate(Math.PI);
-  g.scale(1 + 0.26 * sq, 1 - 0.26 * sq);
+  g.scale(1 + 0.26 * sq, (1 - 0.26 * sq) * (G.ducking ? 0.62 : 1)); // bow down visually
   g.rotate(clamp(G.vy * 0.00035, -0.22, 0.22) * G.s); // lean into motion
   const hw = w / 2, hh = h / 2;
 
@@ -702,12 +635,14 @@ function drawPlayer(t) {
     g.restore();
   }
 
-  // jetpack on the back
-  g.save();
-  g.translate(-hw * 0.85, -hh * 0.1);
-  packBase(g, w * 0.55, h * 0.72, skin.c1, skin.c2);
-  if (G.thrusting) flame(g, w * 0.55, h * 0.72, t);
-  g.restore();
+  // oxygen tank on the back (suit detail)
+  g.fillStyle = '#94a3b8';
+  g.beginPath();
+  if (g.roundRect) g.roundRect(-hw * 1.08, -hh * 0.55, w * 0.3, h * 0.62, w * 0.12);
+  else g.rect(-hw * 1.08, -hh * 0.55, w * 0.3, h * 0.62);
+  g.fill();
+  g.fillStyle = skin.c1;
+  g.fillRect(-hw * 1.08, -hh * 0.12, w * 0.3, h * 0.12);
 
   // legs: run cycle on ground, tucked in flight
   function leg(hx, swing) {
@@ -812,15 +747,22 @@ function drawObstacle(ob, t) {
     g.fillStyle = '#fda4af';
     g.beginPath(); g.arc(-ob.r * 0.25, -ob.r * 0.25, ob.r * 0.25, 0, TAU); g.fill();
     g.restore();
-  } else if (ob.type === 'gate') {
-    const midY = (G.ceilY + G.groundY) / 2, gh = (G.groundY - G.ceilY) / 2;
-    const glow = 0.55 + 0.35 * Math.sin(t * 5);
-    g.strokeStyle = 'rgba(196,181,253,' + glow + ')';
-    g.lineWidth = 5;
-    g.beginPath(); g.ellipse(ob.x, midY, 9 * u, gh * 0.92, 0, 0, TAU); g.stroke();
-    g.strokeStyle = 'rgba(233,213,255,' + (glow * 0.7) + ')';
+  } else if (ob.type === 'bar') {
+    // floating rock bar: chunky, with glowing cracks
+    g.fillStyle = '#57506b';
+    g.beginPath();
+    if (g.roundRect) g.roundRect(ob.x, ob.y, ob.w, ob.h, ob.h * 0.3);
+    else g.rect(ob.x, ob.y, ob.w, ob.h);
+    g.fill();
+    g.fillStyle = '#6d6584';
+    g.fillRect(ob.x + 3, ob.y + 2, ob.w - 6, ob.h * 0.35);
+    g.strokeStyle = 'rgba(255,159,28,' + (0.5 + 0.3 * Math.sin(t * 4 + ob.seed)) + ')';
     g.lineWidth = 2;
-    g.beginPath(); g.ellipse(ob.x, midY, 6 * u, gh * 0.7, 0, 0, TAU); g.stroke();
+    g.beginPath();
+    g.moveTo(ob.x + ob.w * 0.2, ob.y + 2);
+    g.lineTo(ob.x + ob.w * 0.45, ob.y + ob.h - 2);
+    g.lineTo(ob.x + ob.w * 0.7, ob.y + 2);
+    g.stroke();
   } else if (ob.type === 'shard' && !ob.taken) {
     const bob = Math.sin(t * 4 + ob.seed) * 2;
     g.save(); g.translate(ob.x, ob.y + bob); g.rotate(Math.PI / 4);
@@ -942,12 +884,19 @@ function attractUpdate(dt) {
   G.speed = Math.min(CFG.speedMax * u, (CFG.speed0 + G.elapsed * CFG.speedGain) * u);
   G.hillOff = (G.hillOff + G.speed * dt * 0.3) % (80 * u);
   G.bgFarOff += G.speed * dt * 0.06;
-  // gentle autopilot hover
-  const midY = (G.ceilY + G.groundY) / 2;
-  const targetY = midY + Math.sin(G.elapsed * 0.7) * 50;
-  G.py += clamp(targetY - (G.py + G.ph / 2), -1, 1) * G.speed * dt * 0.5;
-  G.vy = 0;
-  G.onGround = false; // flight pose while hovering
+  // run along the ground, auto-jump at nearby low obstacles
+  if (G.onGround) {
+    for (const ob of G.obs) {
+      const near = ob.x > G.px && ob.x - G.px < 30 * u;
+      if (near && (ob.type === 'bar' || (ob.type === 'spike' && ob.side === 'floor'))) {
+        G.vy = -CFG.jumpV * G.u; G.onGround = false; break;
+      }
+    }
+  }
+  G.vy += CFG.grav * u * dt;
+  if (G.vy > CFG.maxFall * u) G.vy = CFG.maxFall * u;
+  G.py += G.vy * dt;
+  if (G.py + G.ph >= G.groundY) { G.py = G.groundY - G.ph; G.vy = 0; G.onGround = true; }
   for (let i = G.obs.length - 1; i >= 0; i--) {
     const ob = G.obs[i];
     ob.x -= G.speed * dt;
@@ -964,12 +913,11 @@ function attractUpdate(dt) {
 /* ---------------- HUD + screens ---------------- */
 function setScreen(name) {
   G.screen = name;
-  if (name !== 'play') Sfx.thrustStop();
   ['menu', 'over', 'custom', 'paused'].forEach(s => $('' + s).classList.toggle('hidden', s !== name));
   const inGame = name === 'play';
   $('hud').classList.toggle('hidden', !inGame);
   $('pauseBtn').classList.toggle('hidden', !inGame);
-  $('dropBtn').classList.toggle('hidden', !inGame);
+  $('duckBtn').classList.toggle('hidden', !inGame);
 }
 function refreshSoundBtn() {
   const b = $('soundBtn');
@@ -1027,24 +975,31 @@ function resumeGame() {
 }
 
 /* ---------------- customize screen ---------------- */
-function packPreview(canvasEl, pack) {
+function suitPreview(canvasEl, suit) {
   const c = canvasEl.getContext('2d');
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   canvasEl.width = 64 * dpr; canvasEl.height = 64 * dpr;
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.clearRect(0, 0, 64, 64);
-  c.save(); c.translate(32, 30);
-  packBase(c, 30, 40, pack.c1, pack.c2);
-  c.fillStyle = '#e2e8f0';
-  c.beginPath(); c.arc(16, -12, 10, 0, TAU); c.fill();
-  c.fillStyle = '#7dd3fc';
-  c.beginPath(); c.arc(19, -12, 6, -1.1, 1.1); c.fill();
+  c.save(); c.translate(32, 34);
+  // mini torso in suit colors
+  c.fillStyle = '#e8eef5';
+  c.fillRect(-11, -4, 22, 28);
+  c.fillStyle = suit.c1;
+  c.fillRect(-11, 6, 22, 7);
+  c.fillStyle = suit.c2;
+  c.beginPath(); c.arc(-3, 0, 3.2, 0, TAU); c.fill();
+  // helmet + visor
+  c.fillStyle = '#eef2f7';
+  c.beginPath(); c.arc(2, -16, 11, 0, TAU); c.fill();
+  c.fillStyle = '#0ea5e9';
+  c.beginPath(); c.arc(6, -16, 6.5, -1.05, 1.05); c.fill();
   c.restore();
 }
 function buildCustom() {
   $('cShards').textContent = save.shards;
   const row = $('packRow'); row.innerHTML = '';
-  PACKS.forEach(p => {
+  SUITS.forEach(p => {
     const unlocked = save.uP.includes(p.id);
     const el = document.createElement('div');
     el.className = 'pick' + (save.pack === p.id ? ' sel' : '');
@@ -1061,12 +1016,12 @@ function buildCustom() {
       persist(); buildCustom();
     };
     row.appendChild(el);
-    packPreview(c, p);
+    suitPreview(c, p);
   });
 }
 
 /* ---------------- boot ---------------- */
-let lastT = 0, readySent = false, wasThrust = false;
+let lastT = 0, readySent = false;
 function loop(ts) {
   requestAnimationFrame(loop);
   const t = ts / 1000;
@@ -1075,15 +1030,10 @@ function loop(ts) {
   if (G.screen === 'play' && !G.paused) {
     if (G.hitStop > 0) G.hitStop -= dt;
     update(G.hitStop > 0 ? 0 : dt);
-    if (G.thrusting && !wasThrust) Sfx.thrustStart();
-    if (!G.thrusting && wasThrust) Sfx.thrustStop();
-    wasThrust = G.thrusting;
     const mult = comboMult(G.combo);
     $('hScore').textContent = Math.floor(G.score);
     $('hCombo').textContent = G.combo > 1 ? 'x' + mult.toFixed(1) : '';
     $('hShards').textContent = '◆ ' + (save.shards + G.runShards);
-    $('fuelFill').style.width = Math.max(0, G.fuel) + '%';
-    $('fuelFill').style.background = G.fuel < 25 ? '#f43f5e' : '';
     const pw = [];
     if (G.shieldT > 0) pw.push('SHD ' + Math.ceil(G.shieldT));
     if (G.magnetT > 0) pw.push('MAG ' + Math.ceil(G.magnetT));
@@ -1125,18 +1075,18 @@ function bindUI() {
       G.usedRevive = true;
       G.shieldT = CFG.shieldTime;
       Sfx.revive();
-      G.obs = G.obs.filter(o => (o.x === undefined || o.x > G.px + 30 * G.u || o.type === 'shard' || o.type === 'gate'));
+      G.obs = G.obs.filter(o => (o.x === undefined || o.x > G.px + 30 * G.u || o.type === 'shard' || o.type === 'pow'));
       setScreen('play');
     }
   };
-  // hold-to-fly: press anywhere on the canvas
-  cv.addEventListener('pointerdown', e => { e.preventDefault(); setHeld(true); });
-  window.addEventListener('pointerup', () => setHeld(false));
-  window.addEventListener('pointercancel', () => setHeld(false));
-  $('dropBtn').addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); drop(); });
+  // tap / Space / Up = jump; Down or DUCK button = bow down (fast-fall in mid-air)
+  cv.addEventListener('pointerdown', e => { e.preventDefault(); jump(); });
+  $('duckBtn').addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); setDuck(true); });
+  window.addEventListener('pointerup', () => setDuck(false));
+  window.addEventListener('pointercancel', () => setDuck(false));
   window.addEventListener('keydown', e => {
-    if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); if (!e.repeat) setHeld(true); }
-    if (e.code === 'ArrowDown') { e.preventDefault(); if (!e.repeat) drop(); }
+    if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); if (!e.repeat) jump(); }
+    if (e.code === 'ArrowDown') { e.preventDefault(); if (!e.repeat) setDuck(true); }
     if (e.code === 'KeyM') { Sfx.init(); Sfx.setMuted(!Sfx.muted); refreshSoundBtn(); }
     if (e.code === 'Escape') {
       if (G.screen === 'custom') $('customBackBtn').click();
@@ -1146,7 +1096,7 @@ function bindUI() {
     if (e.code === 'KeyP' && G.screen === 'play') pauseGame();
   });
   window.addEventListener('keyup', e => {
-    if (e.code === 'Space' || e.code === 'ArrowUp') setHeld(false);
+    if (e.code === 'ArrowDown') setDuck(false);
   });
   window.addEventListener('resize', resize);
   window.addEventListener('contextmenu', e => e.preventDefault());
