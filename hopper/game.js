@@ -6,15 +6,22 @@
 const TAU = Math.PI * 2;
 
 /* ---------------- tuning (units: u = H/100) ---------------- */
+/* ---------------- tuning: dino-faithful (units: u = H/100) ----------------
+   Converted from the actual Chromium T-Rex source (wayou/t-rex-runner):
+   gravity 0.6px/f^2, jumpV ~10.6px/f, speed 6->13px/f @60fps, duck 25/47.
+   Player is 9u tall, 6u wide; dino ratios preserved (jump ~= 2 body heights,
+   airtime ~= 0.58s, duck hitbox ~= 53%, fast fall ~= 3x). */
 const CFG = {
-  grav: 55,         // gravity accel, u/s^2
-  jumpV: 46,        // jump takeoff speed, u/s
-  fastFall: 70,     // down-in-air slam speed, u/s
-  maxFall: 42,      // max fall speed, u/s
-  duckScale: 0.55,  // hitbox height factor while ducking
-  speed0: 44,       // world speed, u/s
-  speedGain: 1.15,  // u/s gained per second
-  speedMax: 98,
+  grav: 414,        // 46 body-heights/s^2
+  jumpV: 121,       // 13.5 body-heights/s takeoff
+  jumpSpeedBoost: 0.14, // dino: jumpV grows with speed (-speed/10)
+  fastFallMin: 14,  // dino speed-drop feel: ~3x fall speed
+  fastFallMax: 90,
+  maxFall: 120,     // generous safety cap only
+  duckScale: 0.55,  // dino: 25/47
+  speed0: 49,       // dino: 6px/frame
+  speedGain: 0.7,   // dino reaches max in ~117s; we use ~80s
+  speedMax: 106,    // dino: 13px/frame
   spawn0: 1.5,      // s between patterns at t=0
   spawnMin: 0.55,
   spawnRamp: 0.02,
@@ -342,36 +349,20 @@ function spawnPattern() {
   const u = G.u, X = G.W + 60;
   const t = G.elapsed;
   const roll = Math.random();
-  if (roll < 0.16) {
-    // floating rock bar: bow down under it (or jump clean over)
-    const bw = (10 + Math.random() * 8) * u, bh = 4.5 * u;
-    const by = G.groundY - (12.5 + Math.random() * 3) * u;
+  if (roll < 0.36) {
+    // floor spikes (dino cacti): small clusters of 1-3, large clusters of 1-2
+    const large = t > 18 && Math.random() < 0.4;
+    const n = large ? 1 + Math.floor(Math.random() * 2) : 1 + Math.floor(Math.random() * 3);
+    const w = (large ? 3.5 : 3) * u, h = (large ? 8 : 5) * u;
+    for (let i = 0; i < n; i++) {
+      G.obs.push({ type: 'spike', side: 'floor', x: X + i * (w + 5 * u), w, h, counted: false });
+    }
+  } else if (roll < 0.54) {
+    // rock bar (dino pterodactyl role): low = bow down, high = run under standing
+    const low = Math.random() < 0.55;
+    const bw = (8 + Math.random() * 4) * u, bh = 3.5 * u;
+    const by = low ? G.groundY - 11 * u : G.groundY - 16.5 * u;
     G.obs.push({ type: 'bar', x: X, y: by, w: bw, h: bh, counted: false, seed: Math.random() * 10 });
-    return;
-  }
-  if (roll < 0.38) {
-    // floor spikes: jump them
-    const n = 1 + Math.floor(Math.random() * (t > 30 ? 3 : 2));
-    for (let i = 0; i < n; i++) {
-      const w = 6 * u, h = (6 + Math.random() * 3) * u;
-      G.obs.push({ type: 'spike', side: 'floor', x: X + i * 16 * u, w, h, counted: false });
-    }
-  } else if (roll < 0.60) {
-    // ceiling spikes: do not jump into them
-    const n = 1 + Math.floor(Math.random() * (t > 30 ? 3 : 2));
-    for (let i = 0; i < n; i++) {
-      const w = 6 * u, h = (6 + Math.random() * 3) * u;
-      G.obs.push({ type: 'spike', side: 'ceil', x: X + i * 16 * u, w, h, counted: false });
-    }
-  } else if (roll < 0.80) {
-    // mines at staggered heights, some drifting
-    const n = 2 + Math.floor(Math.random() * 2);
-    let y = G.ceilY + (12 + Math.random() * 20) * u;
-    for (let i = 0; i < n; i++) {
-      y = clamp(y + (Math.random() - 0.5) * 30 * u, G.ceilY + 10 * u, G.groundY - 10 * u);
-      const drift = t > 25 && Math.random() < 0.45;
-      G.obs.push({ type: 'mine', x: X + i * 24 * u, y, baseY: y, drift, amp: (5 + Math.random() * 6) * u, r: 4.2 * u, counted: false, seed: Math.random() * 10 });
-    }
   } else {
     // shard arc (breather)
     const midY = (G.ceilY + G.groundY) / 2;
@@ -437,6 +428,14 @@ function update(dt) {
     }
   }
   G.prevGround = G.onGround;
+  // running dust kicked up while sprinting
+  if (G.onGround) {
+    G.dustT = (G.dustT || 0) - dt;
+    if (G.dustT <= 0) {
+      G.dustT = 0.14;
+      G.parts.push({ x: G.px + G.pw * 0.2, y: G.groundY - 1, vx: -G.speed * 0.25, vy: -Math.random() * 50, life: 0.4, t: 0, color: '#b8b2a7', r: 2 });
+    }
+  }
   if (G.squashT > 0) G.squashT -= dt;
   // spawn
   G.spawnT -= dt;
@@ -451,9 +450,6 @@ function update(dt) {
   for (let i = G.obs.length - 1; i >= 0; i--) {
     const ob = G.obs[i];
     ob.x -= G.speed * dt;
-    if (ob.type === 'mine' && ob.drift) {
-      ob.y = clamp(ob.baseY + Math.sin(G.elapsed * 2.2 + ob.seed) * ob.amp, G.ceilY + 6 * u, G.groundY - 6 * u);
-    }
 
     if (ob.type === 'shard') {
       if (!ob.taken) {
@@ -493,21 +489,16 @@ function update(dt) {
       continue;
     }
 
-    // deadly: spike, rock bar, or mine
+    // deadly: floor spike or rock bar
     let hit = false;
     if (ob.type === 'spike') {
-      const r = ob.side === 'floor'
-        ? { x: ob.x, y: G.groundY - ob.h, w: ob.w, h: ob.h }
-        : { x: ob.x, y: G.ceilY, w: ob.w, h: ob.h };
+      const r = { x: ob.x, y: G.groundY - ob.h, w: ob.w, h: ob.h };
       hit = rectsOverlap(pb, r);
       ob._cx = ob.x + ob.w / 2; ob._cy = r.y + r.h / 2; ob._hw = ob.w / 2; ob._hh = r.h / 2;
     } else if (ob.type === 'bar') {
       const r = { x: ob.x, y: ob.y, w: ob.w, h: ob.h };
       hit = rectsOverlap(pb, r);
       ob._cx = ob.x + ob.w / 2; ob._cy = ob.y + ob.h / 2; ob._hw = ob.w / 2; ob._hh = ob.h / 2;
-    } else { // mine
-      hit = circleRect(ob.x, ob.y, ob.r, pb);
-      ob._cx = ob.x; ob._cy = ob.y; ob._hw = ob.r; ob._hh = ob.r;
     }
     if (hit && G.shieldT <= 0) { die(); return; }
 
@@ -566,7 +557,8 @@ function die() {
 function jump() {
   if (G.screen !== 'play' || G.paused) return;
   if (G.onGround) {
-    G.vy = -CFG.jumpV * G.u * G.s;
+    // dino: jump velocity grows slightly with world speed (~12% at max speed)
+    G.vy = -(CFG.jumpV + (G.speed / G.u) * CFG.jumpSpeedBoost) * G.u * G.s;
     G.onGround = false;
     G.ducking = false;
     Sfx.jumpSfx();
@@ -579,8 +571,8 @@ function jump() {
 function setDuck(d) {
   if (G.screen !== 'play' || G.paused) { G.duckHeld = false; return; }
   if (d && !G.onGround) {
-    // dino-style: down in mid-air slams you down
-    G.vy = CFG.fastFall * G.u * G.s;
+    // dino speed-drop: ~3x fall speed, immediate
+    G.vy = Math.min(CFG.fastFallMax * G.u, Math.max(CFG.fastFallMin * G.u, G.vy * 3));
     Sfx.dropSfx();
   }
   G.duckHeld = !!d;
@@ -654,10 +646,12 @@ function drawPlayer(t) {
     g.fillRect(fx - w * 0.15, fy - h * 0.035, w * 0.3, h * 0.07);
   }
   if (G.onGround) {
-    const bob = Math.abs(Math.sin(t * 16)) * h * 0.03;
+    // dino-style fast run cycle: stride rate scales with world speed
+    const stride = 24 + (G.speed / G.u) * 0.08;
+    const bob = Math.abs(Math.sin(t * stride)) * h * 0.035;
     g.translate(0, -bob);
-    leg(-w * 0.14, Math.sin(t * 16));
-    leg(w * 0.14, Math.sin(t * 16 + Math.PI));
+    leg(-w * 0.14, Math.sin(t * stride));
+    leg(w * 0.14, Math.sin(t * stride + Math.PI));
   } else {
     leg(-w * 0.16, -0.5);
     leg(w * 0.1, 0.35);
@@ -681,9 +675,9 @@ function drawPlayer(t) {
   g.fillStyle = 'rgba(255,255,255,.9)';
   g.beginPath(); g.arc(-w * 0.1, -hh * 0.25, w * 0.028, 0, TAU); g.fill();
 
-  // arm: swings while running, swept back while flying
+  // arm: pumps while running (matches stride), swept back in the air
   g.strokeStyle = '#dbe4ee'; g.lineWidth = w * 0.16; g.lineCap = 'round';
-  const armSw = G.onGround ? Math.sin(t * 16 + Math.PI) * 0.5 : -0.9;
+  const armSw = G.onGround ? Math.sin(t * (24 + (G.speed / G.u) * 0.08) + Math.PI) * 0.5 : -0.9;
   g.beginPath();
   g.moveTo(w * 0.28, -hh * 0.4);
   g.lineTo(w * 0.28 + armSw * w * 0.3, hh * 0.1);
@@ -720,33 +714,20 @@ function drawPlayer(t) {
 function drawObstacle(ob, t) {
   const u = G.u;
   if (ob.type === 'spike') {
-    const y0 = ob.side === 'floor' ? G.groundY : G.ceilY;
-    const dir = ob.side === 'floor' ? -1 : 1;
+    // floor spike (dino cactus): triangle shard
+    const y0 = G.groundY;
     g.fillStyle = '#94a3b8';
     g.beginPath();
     g.moveTo(ob.x, y0);
-    g.lineTo(ob.x + ob.w / 2, y0 + dir * ob.h);
+    g.lineTo(ob.x + ob.w / 2, y0 - ob.h);
     g.lineTo(ob.x + ob.w, y0);
     g.closePath(); g.fill();
     g.fillStyle = '#cbd5e1';
     g.beginPath();
     g.moveTo(ob.x + ob.w * 0.3, y0);
-    g.lineTo(ob.x + ob.w / 2, y0 + dir * ob.h * 0.55);
+    g.lineTo(ob.x + ob.w / 2, y0 - ob.h * 0.55);
     g.lineTo(ob.x + ob.w * 0.7, y0);
     g.closePath(); g.fill();
-  } else if (ob.type === 'mine') {
-    const pulse = 1 + 0.08 * Math.sin(t * 6 + ob.seed);
-    g.save(); g.translate(ob.x, ob.y); g.rotate(t * 1.5 + ob.seed);
-    g.fillStyle = '#f43f5e';
-    for (let i = 0; i < 8; i++) {
-      g.rotate(Math.PI / 4);
-      g.fillRect(-ob.r * 0.12, -ob.r * 1.25 * pulse, ob.r * 0.24, ob.r * 0.5);
-    }
-    g.fillStyle = '#881337';
-    g.beginPath(); g.arc(0, 0, ob.r * 0.8 * pulse, 0, TAU); g.fill();
-    g.fillStyle = '#fda4af';
-    g.beginPath(); g.arc(-ob.r * 0.25, -ob.r * 0.25, ob.r * 0.25, 0, TAU); g.fill();
-    g.restore();
   } else if (ob.type === 'bar') {
     // floating rock bar: chunky, with glowing cracks
     g.fillStyle = '#57506b';
@@ -884,11 +865,14 @@ function attractUpdate(dt) {
   G.speed = Math.min(CFG.speedMax * u, (CFG.speed0 + G.elapsed * CFG.speedGain) * u);
   G.hillOff = (G.hillOff + G.speed * dt * 0.3) % (80 * u);
   G.bgFarOff += G.speed * dt * 0.06;
-  // run along the ground, auto-jump at nearby low obstacles
+  // run along the ground: duck under low bars, jump spikes and high bars
+  G.duckHeld = false; G.ducking = false;
   if (G.onGround) {
     for (const ob of G.obs) {
       const near = ob.x > G.px && ob.x - G.px < 30 * u;
-      if (near && (ob.type === 'bar' || (ob.type === 'spike' && ob.side === 'floor'))) {
+      if (!near) continue;
+      if (ob.type === 'bar' && ob.y > G.groundY - 14 * u) { G.duckHeld = true; G.ducking = true; break; }
+      if (ob.type === 'spike' || ob.type === 'bar') {
         G.vy = -CFG.jumpV * G.u; G.onGround = false; break;
       }
     }

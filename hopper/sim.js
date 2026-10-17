@@ -139,13 +139,13 @@ function assert(c, msg) { if (!c) { console.error('FAIL:', msg); process.exit(1)
   pump(5);
   assert(G.shieldT > 0, 'flying through a shield orb should grant shield');
 
-  // drifting mine moves vertically over time
-  const my = G.ceilY + 30 * G.u;
-  G.obs.push({ type: 'mine', x: G.px + 200, y: my, baseY: my, drift: true, amp: 8 * G.u, r: 4.2 * G.u, counted: false, seed: 0 });
-  const mine = G.obs[G.obs.length - 1];
-  const yBefore = mine.y;
+  // obstacles scroll left at world speed
+  const obx = G.px + 400;
+  G.obs.push({ type: 'spike', side: 'floor', x: obx, w: 3 * G.u, h: 5 * G.u, counted: false });
+  const ob = G.obs[G.obs.length - 1];
+  const oxBefore = ob.x;
   pump(60);
-  assert(Math.abs(mine.y - yBefore) > 0.5, 'drifting mine should move vertically');
+  assert(ob.x < oxBefore - 10, 'obstacles should scroll left with the world');
 
   // death -> game over -> revive via rewarded ad
   G.shieldT = 0;

@@ -36,6 +36,13 @@ test('jump launches upward only when grounded', () => {
   assert.equal(G.vy, vy);
 });
 
+test('jump feels like the dino: ~0.58s airtime, ~2 body heights', () => {
+  const airtime = 2 * L.CFG.jumpV / L.CFG.grav;
+  assert.ok(airtime > 0.5 && airtime < 0.7, 'airtime should be dino-like, got ' + airtime.toFixed(2) + 's');
+  const heightU = L.CFG.jumpV * L.CFG.jumpV / (2 * L.CFG.grav);
+  assert.ok(heightU > 14 && heightU < 22, 'jump height should clear tall spikes with margin, got ' + heightU.toFixed(1) + 'u');
+});
+
 test('ducking shrinks the hitbox with feet planted', () => {
   const T = L._test();
   const G = T.G;
